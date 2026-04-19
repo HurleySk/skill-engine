@@ -113,6 +113,46 @@ function matchFileTriggers(filePath, rule) {
   return true;
 }
 
+function getSessionStatePath(sessionId) {
+  const tmpDir = process.env.TEMP || process.env.TMPDIR || require('os').tmpdir();
+  return path.join(tmpDir, 'skill-engine-' + sessionId + '.json');
+}
+
+function readSessionState(sessionId) {
+  try {
+    return JSON.parse(fs.readFileSync(getSessionStatePath(sessionId), 'utf8'));
+  } catch {
+    return { firedRules: [] };
+  }
+}
+
+function writeSessionState(sessionId, state) {
+  fs.writeFileSync(getSessionStatePath(sessionId), JSON.stringify(state), 'utf8');
+}
+
+function checkSkip(ruleName, rule, sessionId, filePath) {
+  const skip = rule.skipConditions;
+  if (!skip) return false;
+
+  if (skip.envVars && skip.envVars.length) {
+    if (skip.envVars.some(v => process.env[v])) return true;
+  }
+
+  if (filePath && skip.fileMarkers && skip.fileMarkers.length) {
+    try {
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n').slice(0, 5).join('\n');
+      if (skip.fileMarkers.some(marker => lines.includes(marker))) return true;
+    } catch {}
+  }
+
+  if (skip.sessionOnce && sessionId) {
+    const state = readSessionState(sessionId);
+    if (state.firedRules.includes(ruleName)) return true;
+  }
+
+  return false;
+}
+
 module.exports = {
   findRulesFile,
   loadRules,
@@ -123,4 +163,8 @@ module.exports = {
   matchPath,
   matchContent,
   matchFileTriggers,
+  getSessionStatePath,
+  readSessionState,
+  writeSessionState,
+  checkSkip,
 };
