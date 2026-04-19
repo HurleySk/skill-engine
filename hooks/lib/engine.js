@@ -34,7 +34,13 @@ function matchKeywords(prompt, keywords) {
 
 function matchIntent(prompt, patterns) {
   if (!patterns || !patterns.length) return false;
-  return patterns.some(pat => new RegExp(pat, 'i').test(prompt));
+  return patterns.some(pat => {
+    try {
+      return new RegExp(pat, 'i').test(prompt);
+    } catch {
+      return false;
+    }
+  });
 }
 
 function matchPromptTriggers(prompt, rule) {
@@ -97,7 +103,13 @@ function matchContent(filePath, contentPatterns) {
   if (!contentPatterns || !contentPatterns.length) return false;
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    return contentPatterns.some(pat => new RegExp(pat).test(content));
+    return contentPatterns.some(pat => {
+      try {
+        return new RegExp(pat).test(content);
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return false;
   }
@@ -160,6 +172,7 @@ module.exports = {
   matchIntent,
   matchPromptTriggers,
   normalizePath,
+  globToRegex,
   matchPath,
   matchContent,
   matchFileTriggers,

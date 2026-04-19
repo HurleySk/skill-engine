@@ -90,6 +90,10 @@ describe('Prompt Matching', () => {
     assert.equal(engine.matchIntent('anything', null), false);
   });
 
+  it('matchIntent returns false for invalid regex pattern', () => {
+    assert.equal(engine.matchIntent('anything', ['[invalid']), false);
+  });
+
   it('matchPromptTriggers combines keywords and intent patterns with OR', () => {
     const rule = {
       triggers: { prompt: { keywords: ['pipeline'], intentPatterns: ['(debug|fix).*?pipeline'] } }
