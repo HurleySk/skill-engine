@@ -26,4 +26,21 @@ function loadRules(filePath) {
   }
 }
 
-module.exports = { findRulesFile, loadRules };
+function matchKeywords(prompt, keywords) {
+  if (!keywords || !keywords.length) return false;
+  const lower = prompt.toLowerCase();
+  return keywords.some(kw => lower.includes(kw.toLowerCase()));
+}
+
+function matchIntent(prompt, patterns) {
+  if (!patterns || !patterns.length) return false;
+  return patterns.some(pat => new RegExp(pat, 'i').test(prompt));
+}
+
+function matchPromptTriggers(prompt, rule) {
+  const triggers = rule.triggers?.prompt;
+  if (!triggers) return false;
+  return matchKeywords(prompt, triggers.keywords) || matchIntent(prompt, triggers.intentPatterns);
+}
+
+module.exports = { findRulesFile, loadRules, matchKeywords, matchIntent, matchPromptTriggers };
