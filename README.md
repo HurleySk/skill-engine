@@ -43,7 +43,7 @@ Lives at `.claude/skills/skill-rules.json` in your project. Each rule defines:
 - **triggers**: prompt keywords/patterns and/or file path/content patterns
 - **skipConditions**: env vars, file markers, session-once
 
-See the [spec](docs/superpowers/specs/2026-04-19-skill-engine-design.md) for the full schema.
+See `skills/rules/SKILL.md` for the full schema and trigger pattern reference.
 
 ## Skills
 
