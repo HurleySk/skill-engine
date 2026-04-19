@@ -165,6 +165,101 @@ function checkSkip(ruleName, rule, sessionId, filePath) {
   return false;
 }
 
+const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+
+function getPriority(rule, defaults) {
+  return rule.priority || (defaults && defaults.priority) || 'medium';
+}
+
+function getEnforcement(rule, defaults) {
+  return rule.enforcement || (defaults && defaults.enforcement) || 'suggest';
+}
+
+function activate(input, rulesData) {
+  const prompt = input && input.prompt;
+  const sessionId = input && input.session_id;
+  if (!prompt || !rulesData) return '';
+
+  const matches = [];
+  for (const [name, rule] of Object.entries(rulesData.rules)) {
+    if (checkSkip(name, rule, sessionId, null)) continue;
+    if (!matchPromptTriggers(prompt, rule)) continue;
+    const priority = getPriority(rule, rulesData.defaults);
+    const enforcement = getEnforcement(rule, rulesData.defaults);
+    matches.push({ name, rule, priority, enforcement });
+  }
+
+  if (!matches.length) return '';
+
+  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+
+  if (sessionId) {
+    const state = readSessionState(sessionId);
+    for (const m of matches) {
+      if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce && !state.firedRules.includes(m.name)) {
+        state.firedRules.push(m.name);
+      }
+    }
+    writeSessionState(sessionId, state);
+  }
+
+  const count = matches.length;
+  const lines = [
+    '\u26A1 Skill Engine \u2014 ' + count + ' relevant skill' + (count > 1 ? 's' : '') + ' detected:',
+    ''
+  ];
+  for (const m of matches) {
+    const typeLabel = m.rule.type === 'guardrail' ? ' (guardrail)' : '';
+    lines.push('[' + m.priority.toUpperCase() + '] ' + m.name + typeLabel);
+    lines.push('  ' + m.rule.description);
+    if (m.rule.skillPath) {
+      lines.push('  \u2192 Read: ' + m.rule.skillPath);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+function enforce(input, rulesData) {
+  const filePath = input && input.tool_input && input.tool_input.file_path;
+  if (!filePath || !rulesData) return { exit: 0 };
+
+  const sessionId = input.session_id;
+  const matches = [];
+
+  for (const [name, rule] of Object.entries(rulesData.rules)) {
+    if (rule.type !== 'guardrail') continue;
+    const enforcement = getEnforcement(rule, rulesData.defaults);
+    if (enforcement !== 'block' && enforcement !== 'warn') continue;
+    if (checkSkip(name, rule, sessionId, filePath)) continue;
+    if (!matchFileTriggers(filePath, rule)) continue;
+    const priority = getPriority(rule, rulesData.defaults);
+    matches.push({ name, rule, priority, enforcement });
+  }
+
+  if (!matches.length) return { exit: 0 };
+
+  matches.sort((a, b) => {
+    if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
+    if (a.enforcement !== 'block' && b.enforcement === 'block') return 1;
+    return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+  });
+
+  const blockMatch = matches.find(m => m.enforcement === 'block');
+  if (blockMatch) {
+    const msg = blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name);
+    return { exit: 2, stderr: msg };
+  }
+
+  const warnings = matches
+    .filter(m => m.enforcement === 'warn')
+    .map(m => '\u26A0\uFE0F ' + m.name + ': ' + m.rule.description)
+    .join('\n');
+
+  return { exit: 0, stderr: warnings || undefined };
+}
+
 module.exports = {
   findRulesFile,
   loadRules,
@@ -180,4 +275,31 @@ module.exports = {
   readSessionState,
   writeSessionState,
   checkSkip,
+  activate,
+  enforce,
 };
+
+if (require.main === module) {
+  const mode = process.argv[2];
+  let input;
+  try {
+    input = JSON.parse(fs.readFileSync(0, 'utf8'));
+  } catch {
+    process.exit(0);
+  }
+  const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const rulesFile = findRulesFile(cwd);
+  const rulesData = loadRules(rulesFile);
+  if (!rulesData) process.exit(0);
+
+  if (mode === 'activate') {
+    const output = activate(input, rulesData);
+    if (output) process.stdout.write(output);
+    process.exit(0);
+  } else if (mode === 'enforce') {
+    const result = enforce(input, rulesData);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exit(result.exit);
+  }
+  process.exit(0);
+}

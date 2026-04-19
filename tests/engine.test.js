@@ -253,3 +253,144 @@ describe('Skip Conditions', () => {
     assert.equal(engine.checkSkip('rule', { skipConditions: null }, null, null), false);
   });
 });
+
+describe('Activate', () => {
+  const fixturesDir = path.resolve(__dirname, 'fixtures');
+  const activateSessionId = 'activate-test-' + Date.now();
+
+  after(() => {
+    try { fs.unlinkSync(engine.getSessionStatePath(activateSessionId)); } catch {}
+  });
+
+  it('activate returns formatted output for keyword match', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = { prompt: 'I need to create a stored proc', session_id: activateSessionId };
+    const output = engine.activate(input, rulesData);
+    assert.ok(output.includes('Skill Engine'));
+    assert.ok(output.includes('sql-standards'));
+    assert.ok(output.includes('CRITICAL'));
+    assert.ok(output.includes('./sql-standards/SKILL.md'));
+  });
+
+  it('activate returns empty string when no matches', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = { prompt: 'build a REST API', session_id: activateSessionId };
+    const output = engine.activate(input, rulesData);
+    assert.equal(output, '');
+  });
+
+  it('activate sorts by priority (critical before high)', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = { prompt: 'create a stored proc for the pipeline', session_id: activateSessionId };
+    const output = engine.activate(input, rulesData);
+    const criticalPos = output.indexOf('CRITICAL');
+    const highPos = output.indexOf('HIGH');
+    assert.ok(criticalPos < highPos, 'CRITICAL should appear before HIGH');
+  });
+
+  it('activate respects sessionOnce — skips on second call', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const sid = 'once-test-' + Date.now();
+    const input = { prompt: 'check the pipeline', session_id: sid };
+    const first = engine.activate(input, rulesData);
+    assert.ok(first.includes('pipeline-guidance'));
+    const second = engine.activate(input, rulesData);
+    assert.ok(!second.includes('pipeline-guidance'), 'sessionOnce rule should not fire twice');
+    try { fs.unlinkSync(engine.getSessionStatePath(sid)); } catch {}
+  });
+
+  it('activate returns empty string when rulesData is null', () => {
+    assert.equal(engine.activate({ prompt: 'anything' }, null), '');
+  });
+
+  it('activate returns empty string when prompt is empty', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    assert.equal(engine.activate({ prompt: '' }, rulesData), '');
+  });
+});
+
+describe('Enforce', () => {
+  const fixturesDir = path.resolve(__dirname, 'fixtures');
+
+  it('enforce returns exit 2 for block rule matching file path + content', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(fixturesDir, 'sample.sql') },
+      session_id: 'enforce-test-1'
+    };
+    const result = engine.enforce(input, rulesData);
+    assert.equal(result.exit, 2);
+    assert.ok(result.stderr.includes('SQL standards apply'));
+  });
+
+  it('enforce returns exit 0 for warn rule', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(fixturesDir, 'sample.config') },
+      session_id: 'enforce-test-2'
+    };
+    const result = engine.enforce(input, rulesData);
+    assert.equal(result.exit, 0);
+    assert.ok(result.stderr.includes('config-warning'));
+  });
+
+  it('enforce returns silent exit 0 when no rules match', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: '/some/path/readme.md' },
+      session_id: 'enforce-test-3'
+    };
+    const result = engine.enforce(input, rulesData);
+    assert.equal(result.exit, 0);
+    assert.equal(result.stderr, undefined);
+  });
+
+  it('enforce skips rule when file has skip marker', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(fixturesDir, 'sample-skip.sql') },
+      session_id: 'enforce-test-4'
+    };
+    const result = engine.enforce(input, rulesData);
+    assert.equal(result.exit, 0, 'skip marker should prevent block');
+  });
+
+  it('enforce skips rule when env var is set', () => {
+    process.env.SKIP_SQL_STANDARDS = '1';
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(fixturesDir, 'sample.sql') },
+      session_id: 'enforce-test-5'
+    };
+    const result = engine.enforce(input, rulesData);
+    assert.equal(result.exit, 0, 'env var skip should prevent block');
+    delete process.env.SKIP_SQL_STANDARDS;
+  });
+
+  it('enforce returns exit 0 when rulesData is null', () => {
+    const result = engine.enforce({ tool_name: 'Edit', tool_input: { file_path: 'file.sql' } }, null);
+    assert.equal(result.exit, 0);
+  });
+
+  it('enforce returns exit 0 when file_path is missing', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const result = engine.enforce({ tool_name: 'Edit', tool_input: {} }, rulesData);
+    assert.equal(result.exit, 0);
+  });
+
+  it('enforce only checks guardrail-type rules', () => {
+    const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: '/project/pipeline/main.json' },
+      session_id: 'enforce-test-6'
+    };
+    const result = engine.enforce(input, rulesData);
+    assert.equal(result.exit, 0);
+  });
+});
