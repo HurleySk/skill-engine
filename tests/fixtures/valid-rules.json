@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "defaults": {
+    "enforcement": "suggest",
+    "priority": "medium"
+  },
+  "rules": {
+    "sql-standards": {
+      "type": "guardrail",
+      "enforcement": "block",
+      "priority": "critical",
+      "description": "Enforce SQL coding standards",
+      "skillPath": "./sql-standards/SKILL.md",
+      "triggers": {
+        "prompt": {
+          "keywords": ["stored proc", "sproc", "procedure"],
+          "intentPatterns": ["(create|modify).*?proc"]
+        },
+        "file": {
+          "pathPatterns": ["**/*.sql"],
+          "pathExclusions": ["**/migrations/**"],
+          "contentPatterns": ["CREATE\\s+PROC"]
+        }
+      },
+      "blockMessage": "SQL standards apply. Read .claude/skills/sql-standards/SKILL.md first.",
+      "skipConditions": {
+        "fileMarkers": ["-- @skip-sql-standards"],
+        "envVars": ["SKIP_SQL_STANDARDS"],
+        "sessionOnce": false
+      }
+    },
+    "pipeline-guidance": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "description": "ADF pipeline development guidance",
+      "skillPath": "./adf-pipeline/SKILL.md",
+      "triggers": {
+        "prompt": {
+          "keywords": ["pipeline", "ADF", "data factory"],
+          "intentPatterns": ["(debug|fix|create).*?pipeline"]
+        }
+      },
+      "skipConditions": {
+        "sessionOnce": true
+      }
+    },
+    "config-warning": {
+      "type": "guardrail",
+      "enforcement": "warn",
+      "priority": "medium",
+      "description": "Check config file changes carefully",
+      "skillPath": "./config-safety/SKILL.md",
+      "triggers": {
+        "file": {
+          "pathPatterns": ["**/*.config", "**/appsettings*.json"]
+        }
+      },
+      "skipConditions": {
+        "envVars": ["SKIP_CONFIG_WARN"]
+      }
+    }
+  }
+}
