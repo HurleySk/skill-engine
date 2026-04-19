@@ -1,0 +1,69 @@
+name: Version Bump & Marketplace Sync
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version-bump:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      plugin_name: ${{ steps.bump.outputs.plugin_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check and bump version
+        id: bump
+        run: |
+          CURRENT=$(jq -r '.version' .claude-plugin/plugin.json)
+          PREVIOUS=$(git show HEAD~1:.claude-plugin/plugin.json 2>/dev/null | jq -r '.version' 2>/dev/null || echo "")
+          PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
+
+          echo "plugin_name=$PLUGIN_NAME" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" != "$PREVIOUS" ] && [ -n "$PREVIOUS" ]; then
+            echo "Version already bumped: $PREVIOUS -> $CURRENT"
+            echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            echo "Auto-bumping: $CURRENT -> $NEW_VERSION"
+            jq --arg v "$NEW_VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json
+            mv tmp.json .claude-plugin/plugin.json
+            echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit version bump
+        if: steps.bump.outputs.version != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .claude-plugin/plugin.json
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "[auto-bump] v${{ steps.bump.outputs.version }}"
+          git push
+
+      - name: Create version tag
+        if: steps.bump.outputs.version != ''
+        run: |
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
+
+  notify-marketplace:
+    needs: version-bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to marketplace
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.MARKETPLACE_PAT }}" \
+            https://api.github.com/repos/HurleySk/claude-plugins-marketplace/dispatches \
+            -d "{\"event_type\":\"plugin-version-update\",\"client_payload\":{\"plugin_name\":\"${{ needs.version-bump.outputs.plugin_name }}\",\"version\":\"${{ needs.version-bump.outputs.version }}\"}}"
