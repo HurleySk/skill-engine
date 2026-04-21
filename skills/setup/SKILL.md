@@ -42,6 +42,9 @@ Copy the hook scripts from the skill-engine plugin into the project:
 ```
 .claude/
 ├── hooks/
+│   ├── lib/                        ← shared utilities (NEW)
+│   │   ├── glob-match.js
+│   │   └── hook-helpers.sh
 │   └── skill-engine/
 │       ├── activate.sh
 │       ├── enforce.sh
@@ -52,17 +55,30 @@ Copy the hook scripts from the skill-engine plugin into the project:
     └── skill-rules.json    ← scaffold if doesn't exist
 ```
 
-The hook files are located in the skill-engine plugin directory at `hooks/`. Copy them to the project's `.claude/hooks/skill-engine/` directory.
+The hook files are located in the skill-engine plugin directory at `hooks/`. Copy shared utilities to `.claude/hooks/lib/` and engine-specific files to `.claude/hooks/skill-engine/`.
 
 To find the plugin directory, check:
 ```bash
 ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/hooks/
 ```
 
-Copy the entire `hooks/` subtree:
+Copy the files:
 ```bash
+# Find plugin hooks directory
+PLUGIN_HOOKS=$(ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/hooks/ 2>/dev/null | sort -V | tail -1)
+
+# Shared utilities — available to any hook in the project
+mkdir -p .claude/hooks/lib
+cp "$PLUGIN_HOOKS/lib/glob-match.js" .claude/hooks/lib/
+cp "$PLUGIN_HOOKS/lib/hook-helpers.sh" .claude/hooks/lib/
+chmod +x .claude/hooks/lib/hook-helpers.sh
+
+# Engine-specific files
 mkdir -p .claude/hooks/skill-engine/lib
-cp -r <plugin-hooks-dir>/* .claude/hooks/skill-engine/
+cp "$PLUGIN_HOOKS/activate.sh" .claude/hooks/skill-engine/
+cp "$PLUGIN_HOOKS/enforce.sh" .claude/hooks/skill-engine/
+cp "$PLUGIN_HOOKS/lib/engine.js" .claude/hooks/skill-engine/lib/
+cp "$PLUGIN_HOOKS/lib/learn.js" .claude/hooks/skill-engine/lib/
 chmod +x .claude/hooks/skill-engine/activate.sh
 chmod +x .claude/hooks/skill-engine/enforce.sh
 ```
@@ -131,8 +147,10 @@ If the output is empty (no matching rules yet) or shows formatted suggestions, t
 
 1. Remove skill-engine hook entries from `.claude/settings.json` (keep other hooks)
 2. Delete `.claude/hooks/skill-engine/` directory
-3. Do NOT delete `.claude/skills/` — that's the user's content
-4. Report what was removed
+3. Remove `.claude/hooks/lib/glob-match.js` and `.claude/hooks/lib/hook-helpers.sh`
+4. If `.claude/hooks/lib/` is now empty, remove it. If other files exist, leave it.
+5. Do NOT delete `.claude/skills/` — that's the user's content
+6. Report what was removed
 
 ## Status Check
 
