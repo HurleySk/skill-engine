@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { execSync } = require('child_process');
 
 const learn = require(path.resolve(__dirname, '..', 'hooks', 'lib', 'learn.js'));
 
@@ -211,8 +212,6 @@ describe('remove', () => {
   });
 });
 
-const { execSync } = require('child_process');
-
 describe('CLI', () => {
   let tmpDir;
   let learnedFile;
@@ -284,7 +283,7 @@ describe('CLI', () => {
     assert.throws(() => {
       execSync(
         `node "${learnScript}" add bad-rule '${ruleJson}' --file "${learnedFile}"`,
-        { encoding: 'utf8', shell: 'bash' }
+        { encoding: 'utf8', shell: 'bash', stdio: ['pipe', 'pipe', 'pipe'] }
       );
     });
   });
