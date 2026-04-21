@@ -41,6 +41,9 @@ function loadLearnedFile(filePath) {
 }
 
 function add(ruleName, rule, filePath) {
+  if (!ruleName || typeof ruleName !== 'string' || !ruleName.trim()) {
+    return { ok: false, error: 'Rule name must be a non-empty string.' };
+  }
   const validation = validateRule(rule);
   if (!validation.ok) return validation;
 

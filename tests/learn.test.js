@@ -57,6 +57,17 @@ describe('add', () => {
     assert.ok(result.error.includes('Invalid type'));
   });
 
+  it('rejects empty rule name', () => {
+    const rule = {
+      type: 'guardrail',
+      description: 'test',
+      triggers: { file: { pathPatterns: ['**/*.sql'] } }
+    };
+    const result = learn.add('', rule, learnedFile);
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes('non-empty'));
+  });
+
   it('rejects duplicate rule name', () => {
     const rule = {
       type: 'guardrail',
