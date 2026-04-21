@@ -474,7 +474,7 @@ describe('Learned Rules Merge', () => {
     );
     const mainData = engine.loadRules(path.join(rulesDir, 'skill-rules.json'));
     const learnedData = engine.loadRules(path.join(rulesDir, 'learned-rules.json'));
-    const merged = { ...mainData, rules: { ...mainData.rules, ...learnedData.rules } };
+    const merged = { ...mainData, rules: { ...learnedData.rules, ...mainData.rules } };
 
     const result = engine.enforce(
       { tool_name: 'Edit', tool_input: { file_path: '/any/path/file.sql' }, session_id: 'merge-3' },
