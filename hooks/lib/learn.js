@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { normalizePath } = require('./engine.js');
+const { normalizePath, loadRules } = require('./engine.js');
 
 const REQUIRED_FIELDS = ['type', 'description', 'triggers'];
 
@@ -29,16 +29,8 @@ function normalizeTriggerPaths(rule) {
   return copy;
 }
 
-function loadLearnedFile(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return null;
-  try {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (data.version !== '1.0' || !data.rules) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
+// Reuse engine's loadRules — same schema for both files
+const loadLearnedFile = loadRules;
 
 function add(ruleName, rule, filePath) {
   if (!ruleName || typeof ruleName !== 'string' || !ruleName.trim()) {
