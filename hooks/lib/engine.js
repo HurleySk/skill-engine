@@ -3,6 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 
+// Shared glob utilities — resolve from sibling (repo/dev) or shared install location
+const { normalizePath, globToRegex, matchPath } = (() => {
+  try { return require('./glob-match'); } catch {}
+  try { return require('../../lib/glob-match'); } catch {}
+  throw new Error('glob-match.js not found — run skill-engine setup');
+})();
+
 function findFileInAncestors(startDir, filename) {
   let dir = path.resolve(startDir);
   const root = path.parse(dir).root;
@@ -57,55 +64,7 @@ function matchPromptTriggers(prompt, rule) {
   return matchKeywords(prompt, triggers.keywords) || matchIntent(prompt, triggers.intentPatterns);
 }
 
-function normalizePath(filePath) {
-  return filePath.replace(/\\/g, '/');
-}
-
-function globToRegex(glob) {
-  const normalized = glob.replace(/\\/g, '/');
-  let result = '';
-  let i = 0;
-  while (i < normalized.length) {
-    const ch = normalized[i];
-    if (ch === '*' && normalized[i + 1] === '*') {
-      // ** glob — look at surrounding slashes
-      if (normalized[i + 2] === '/') {
-        // **/ at start or after separator: zero or more path segments
-        result += '(?:.*/)?';
-        i += 3;
-      } else if (i > 0 && normalized[i - 1] === '/') {
-        // /** at end
-        result += '(?:.*)?';
-        i += 2;
-      } else {
-        result += '.*';
-        i += 2;
-      }
-    } else if (ch === '*') {
-      result += '[^/]*';
-      i += 1;
-    } else if (ch === '?') {
-      result += '[^/]';
-      i += 1;
-    } else if ('.+^${}()|[]\\'.includes(ch)) {
-      result += '\\' + ch;
-      i += 1;
-    } else {
-      result += ch;
-      i += 1;
-    }
-  }
-  return new RegExp('^' + result + '$');
-}
-
-function matchPath(filePath, pathPatterns, pathExclusions) {
-  const normalized = normalizePath(filePath);
-  if (pathExclusions && pathExclusions.length) {
-    if (pathExclusions.some(pat => globToRegex(pat).test(normalized))) return false;
-  }
-  if (!pathPatterns || !pathPatterns.length) return false;
-  return pathPatterns.some(pat => globToRegex(pat).test(normalized));
-}
+// normalizePath, globToRegex, matchPath — imported from ./glob-match
 
 function matchContent(filePath, contentPatterns) {
   if (!contentPatterns || !contentPatterns.length) return false;
