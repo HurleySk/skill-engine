@@ -143,6 +143,42 @@ assert_exit "enforce exits 0 with no rules file" 0 $EXIT
 rm -rf "$TMPDIR_ENF"
 
 echo ""
+echo "=== learn.js + enforce.sh integration ==="
+
+TMPDIR_LEARN=$(mktemp -d)
+RULES_DIR_LEARN="$TMPDIR_LEARN/.claude/skills"
+mkdir -p "$RULES_DIR_LEARN"
+
+# Write a minimal skill-rules.json (required for engine to load)
+echo '{"version":"1.0","defaults":{"enforcement":"suggest","priority":"medium"},"rules":{}}' \
+  > "$RULES_DIR_LEARN/skill-rules.json"
+
+NODE_TMPDIR_LEARN=$(node_path "$TMPDIR_LEARN")
+NODE_LEARNED_FILE=$(node_path "$RULES_DIR_LEARN/learned-rules.json")
+LEARN_SCRIPT="$SCRIPT_DIR/../hooks/lib/learn.js"
+
+# Add a learned warn rule via learn.js
+RULE_JSON='{"type":"guardrail","enforcement":"warn","description":"Learned: always review JS files","triggers":{"file":{"pathPatterns":["**/*.js"]}}}'
+node "$LEARN_SCRIPT" add js-review "$RULE_JSON" --file "$NODE_LEARNED_FILE" > /dev/null
+
+# Verify the learned rule file was created
+set +e
+OUTPUT=$(cat "$RULES_DIR_LEARN/learned-rules.json" 2>/dev/null)
+set -e
+assert_contains "learned-rules.json contains js-review rule" "js-review" "$OUTPUT"
+
+# Now enforce.sh should fire the learned warn rule on a .js file
+set +e
+STDERR=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"C:/some/path/app.js\"},\"session_id\":\"learn-int-1\",\"cwd\":\"$NODE_TMPDIR_LEARN\"}" \
+  | bash "$HOOKS_DIR/enforce.sh" 2>&1 1>/dev/null)
+EXIT=$?
+set -e
+assert_exit "enforce exits 0 for learned warn rule" 0 $EXIT
+assert_contains "enforce stderr contains learned rule name" "js-review" "$STDERR"
+
+rm -rf "$TMPDIR_LEARN"
+
+echo ""
 echo "=== Results ==="
 echo "$PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ] && exit 0 || exit 1
