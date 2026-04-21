@@ -137,29 +137,12 @@ describe('Prompt Matching', () => {
 describe('File Path Matching', () => {
   const fixturesDir = path.resolve(__dirname, 'fixtures');
 
-  it('normalizePath converts backslashes to forward slashes', () => {
-    assert.equal(engine.normalizePath('C:\\Users\\test\\file.sql'), 'C:/Users/test/file.sql');
-    assert.equal(engine.normalizePath('src/db/file.sql'), 'src/db/file.sql');
-  });
-
-  it('matchPath matches glob patterns', () => {
-    assert.equal(engine.matchPath('src/db/sprocs/GetUsers.sql', ['**/*.sql'], []), true);
-    assert.equal(engine.matchPath('deep/nested/path/file.sql', ['**/*.sql'], []), true);
-    assert.equal(engine.matchPath('file.txt', ['**/*.sql'], []), false);
-  });
-
-  it('matchPath respects exclusions', () => {
-    assert.equal(engine.matchPath('migrations/001.sql', ['**/*.sql'], ['**/migrations/**']), false);
-    assert.equal(engine.matchPath('src/db/GetUsers.sql', ['**/*.sql'], ['**/migrations/**']), true);
-  });
-
-  it('matchPath handles Windows backslash paths', () => {
-    assert.equal(engine.matchPath('src\\db\\file.sql', ['**/*.sql'], []), true);
-  });
-
-  it('matchPath returns false for empty patterns', () => {
-    assert.equal(engine.matchPath('file.sql', [], []), false);
-    assert.equal(engine.matchPath('file.sql', null, []), false);
+  it('re-exports glob functions from shared module', () => {
+    assert.equal(typeof engine.normalizePath, 'function');
+    assert.equal(typeof engine.globToRegex, 'function');
+    assert.equal(typeof engine.matchPath, 'function');
+    // Quick smoke test — detailed tests are in glob-match.test.js
+    assert.equal(engine.matchPath('src/file.sql', ['**/*.sql'], []), true);
   });
 
   it('matchContent finds regex in file contents', () => {
