@@ -1,7 +1,7 @@
 {
   "name": "skill-engine",
-  "version": "1.0.2",
-  "description": "Hook-driven skill activation and guardrail enforcement for Claude Code projects. Reads skill-rules.json to suggest relevant skills on prompt and enforce guardrails on file edits.",
+  "version": "1.1.0",
+  "description": "Hook-driven skill activation, guardrail enforcement, and shared hook utilities (glob matching, bash helpers) for Claude Code projects.",
   "author": {
     "name": "Samuel Hurley",
     "url": "https://github.com/HurleySk"
