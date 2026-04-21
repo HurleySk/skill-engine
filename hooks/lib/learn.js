@@ -46,6 +46,7 @@ function add(ruleName, rule, filePath) {
     return { ok: false, error: `Rule "${ruleName}" already exists. Remove it first.` };
   }
 
+  if (!normalized.enforcement) normalized.enforcement = 'warn';
   data.rules[ruleName] = normalized;
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

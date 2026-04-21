@@ -3,11 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 
-function findRulesFile(startDir) {
+function findFileInAncestors(startDir, filename) {
   let dir = path.resolve(startDir);
   const root = path.parse(dir).root;
   while (true) {
-    const candidate = path.join(dir, '.claude', 'skills', 'skill-rules.json');
+    const candidate = path.join(dir, '.claude', 'skills', filename);
     if (fs.existsSync(candidate)) return candidate;
     const parent = path.dirname(dir);
     if (parent === dir || dir === root) return null;
@@ -15,16 +15,12 @@ function findRulesFile(startDir) {
   }
 }
 
+function findRulesFile(startDir) {
+  return findFileInAncestors(startDir, 'skill-rules.json');
+}
+
 function findLearnedRulesFile(startDir) {
-  let dir = path.resolve(startDir);
-  const root = path.parse(dir).root;
-  while (true) {
-    const candidate = path.join(dir, '.claude', 'skills', 'learned-rules.json');
-    if (fs.existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir || dir === root) return null;
-    dir = parent;
-  }
+  return findFileInAncestors(startDir, 'learned-rules.json');
 }
 
 function loadRules(filePath) {
