@@ -2,7 +2,7 @@ name: Version Bump & Marketplace Sync
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: write
