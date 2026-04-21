@@ -210,3 +210,82 @@ describe('remove', () => {
     assert.ok(result.error.includes('not found'));
   });
 });
+
+const { execSync } = require('child_process');
+
+describe('CLI', () => {
+  let tmpDir;
+  let learnedFile;
+  const learnScript = path.resolve(__dirname, '..', 'hooks', 'lib', 'learn.js');
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'learn-cli-'));
+    learnedFile = path.join(tmpDir, 'learned-rules.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('add via CLI writes rule to file', () => {
+    const ruleJson = JSON.stringify({
+      type: 'guardrail',
+      description: 'CLI test rule',
+      triggers: { file: { pathPatterns: ['**/*.sql'] } }
+    });
+    const output = execSync(
+      `node "${learnScript}" add cli-rule '${ruleJson}' --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    assert.ok(output.includes('cli-rule'));
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.ok(data.rules['cli-rule']);
+  });
+
+  it('list via CLI shows rules', () => {
+    const ruleJson = JSON.stringify({
+      type: 'guardrail',
+      description: 'List test',
+      triggers: { file: { pathPatterns: ['**/*.js'] } }
+    });
+    execSync(
+      `node "${learnScript}" add list-test '${ruleJson}' --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    const output = execSync(
+      `node "${learnScript}" list --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    assert.ok(output.includes('list-test'));
+    assert.ok(output.includes('List test'));
+  });
+
+  it('remove via CLI deletes rule', () => {
+    const ruleJson = JSON.stringify({
+      type: 'guardrail',
+      description: 'Remove me',
+      triggers: { file: { pathPatterns: ['**/*.txt'] } }
+    });
+    execSync(
+      `node "${learnScript}" add to-delete '${ruleJson}' --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    const output = execSync(
+      `node "${learnScript}" remove to-delete --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    assert.ok(output.includes('to-delete'));
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.equal(data.rules['to-delete'], undefined);
+  });
+
+  it('add via CLI exits 1 on validation error', () => {
+    const ruleJson = JSON.stringify({ type: 'guardrail', description: 'missing triggers' });
+    assert.throws(() => {
+      execSync(
+        `node "${learnScript}" add bad-rule '${ruleJson}' --file "${learnedFile}"`,
+        { encoding: 'utf8', shell: 'bash' }
+      );
+    });
+  });
+});

@@ -99,3 +99,58 @@ function remove(ruleName, filePath) {
 }
 
 module.exports = { validateRule, normalizeTriggerPaths, loadLearnedFile, add, list, remove };
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  // Parse --file flag
+  const fileIdx = args.indexOf('--file');
+  let filePath;
+  if (fileIdx !== -1 && args[fileIdx + 1]) {
+    filePath = args[fileIdx + 1];
+  } else {
+    // Default: find .claude/skills/ from cwd using engine's findRulesFile
+    const { findRulesFile } = require('./engine.js');
+    const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const rulesFile = findRulesFile(cwd);
+    if (rulesFile) {
+      filePath = path.join(path.dirname(rulesFile), 'learned-rules.json');
+    } else {
+      filePath = path.join(cwd, '.claude', 'skills', 'learned-rules.json');
+    }
+  }
+
+  if (command === 'add') {
+    const ruleName = args[1];
+    let ruleJson;
+    try {
+      ruleJson = JSON.parse(args[2]);
+    } catch {
+      process.stderr.write('Error: Invalid JSON for rule.\n');
+      process.exit(1);
+    }
+    const result = add(ruleName, ruleJson, filePath);
+    if (result.ok) {
+      process.stdout.write(`Rule "${ruleName}" saved to ${filePath}\n`);
+    } else {
+      process.stderr.write(`Error: ${result.error}\n`);
+      process.exit(1);
+    }
+  } else if (command === 'list') {
+    const result = list(filePath);
+    process.stdout.write(result.output + '\n');
+  } else if (command === 'remove') {
+    const ruleName = args[1];
+    const result = remove(ruleName, filePath);
+    if (result.ok) {
+      process.stdout.write(`Rule "${ruleName}" removed from ${filePath}\n`);
+    } else {
+      process.stderr.write(`Error: ${result.error}\n`);
+      process.exit(1);
+    }
+  } else {
+    process.stderr.write('Usage: node learn.js <add|list|remove> [args] [--file path]\n');
+    process.exit(1);
+  }
+}
