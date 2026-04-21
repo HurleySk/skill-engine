@@ -1,4 +1,4 @@
-const { describe, it, after } = require('node:test');
+const { describe, it, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
@@ -54,6 +54,27 @@ describe('Rules Loading', () => {
   it('findRulesFile returns null when no rules file exists', () => {
     const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'se-test-'));
     const result = engine.findRulesFile(tmpBase);
+    assert.equal(result, null);
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it('findLearnedRulesFile finds learned-rules.json walking up directories', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'se-test-'));
+    const projectDir = path.join(tmpBase, 'project');
+    const srcDir = path.join(projectDir, 'src', 'deep');
+    const rulesDir = path.join(projectDir, '.claude', 'skills');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(rulesDir, { recursive: true });
+    const learnedFile = path.join(rulesDir, 'learned-rules.json');
+    fs.writeFileSync(learnedFile, '{"version":"1.0","rules":{}}');
+    const found = engine.findLearnedRulesFile(srcDir);
+    assert.equal(found, learnedFile);
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it('findLearnedRulesFile returns null when no file exists', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'se-test-'));
+    const result = engine.findLearnedRulesFile(tmpBase);
     assert.equal(result, null);
     fs.rmSync(tmpBase, { recursive: true, force: true });
   });
@@ -392,5 +413,113 @@ describe('Enforce', () => {
     };
     const result = engine.enforce(input, rulesData);
     assert.equal(result.exit, 0);
+  });
+});
+
+describe('Learned Rules Merge', () => {
+  let tmpBase;
+  let rulesDir;
+
+  beforeEach(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'se-merge-'));
+    rulesDir = path.join(tmpBase, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  function writeRulesFiles(mainRules, learnedRules) {
+    if (mainRules) {
+      fs.writeFileSync(
+        path.join(rulesDir, 'skill-rules.json'),
+        JSON.stringify({ version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: mainRules }, null, 2)
+      );
+    }
+    if (learnedRules) {
+      fs.writeFileSync(
+        path.join(rulesDir, 'learned-rules.json'),
+        JSON.stringify({ version: '1.0', rules: learnedRules }, null, 2)
+      );
+    }
+  }
+
+  it('activate matches rules from both files', () => {
+    writeRulesFiles(
+      { 'main-rule': { type: 'domain', description: 'Main rule', triggers: { prompt: { keywords: ['main'] } } } },
+      { 'learned-rule': { type: 'domain', description: 'Learned rule', triggers: { prompt: { keywords: ['learned'] } } } }
+    );
+    const mainData = engine.loadRules(path.join(rulesDir, 'skill-rules.json'));
+    const learnedData = engine.loadRules(path.join(rulesDir, 'learned-rules.json'));
+    const merged = { ...mainData, rules: { ...learnedData.rules, ...mainData.rules } };
+
+    const out1 = engine.activate({ prompt: 'test main topic', session_id: 'merge-1' }, merged);
+    assert.ok(out1.includes('main-rule'));
+    const out2 = engine.activate({ prompt: 'test learned topic', session_id: 'merge-2' }, merged);
+    assert.ok(out2.includes('learned-rule'));
+  });
+
+  it('enforce fires warn from learned rules', () => {
+    writeRulesFiles(
+      {},
+      {
+        'learned-warn': {
+          type: 'guardrail',
+          enforcement: 'warn',
+          description: 'Learned warning',
+          triggers: { file: { pathPatterns: ['**/*.sql'] } }
+        }
+      }
+    );
+    const mainData = engine.loadRules(path.join(rulesDir, 'skill-rules.json'));
+    const learnedData = engine.loadRules(path.join(rulesDir, 'learned-rules.json'));
+    const merged = { ...mainData, rules: { ...mainData.rules, ...learnedData.rules } };
+
+    const result = engine.enforce(
+      { tool_name: 'Edit', tool_input: { file_path: '/any/path/file.sql' }, session_id: 'merge-3' },
+      merged
+    );
+    assert.equal(result.exit, 0);
+    assert.ok(result.stderr.includes('learned-warn'));
+  });
+
+  it('skill-rules.json wins on name collision', () => {
+    writeRulesFiles(
+      { 'collision': { type: 'domain', description: 'Main wins', triggers: { prompt: { keywords: ['collision'] } } } },
+      { 'collision': { type: 'domain', description: 'Learned loses', triggers: { prompt: { keywords: ['collision'] } } } }
+    );
+    const mainData = engine.loadRules(path.join(rulesDir, 'skill-rules.json'));
+    const learnedData = engine.loadRules(path.join(rulesDir, 'learned-rules.json'));
+    const merged = { ...mainData, rules: { ...learnedData.rules, ...mainData.rules } };
+
+    const out = engine.activate({ prompt: 'test collision', session_id: 'merge-4' }, merged);
+    assert.ok(out.includes('Main wins'));
+    assert.ok(!out.includes('Learned loses'));
+  });
+
+  it('activate works when learned-rules.json is missing', () => {
+    writeRulesFiles(
+      { 'only-main': { type: 'domain', description: 'Solo rule', triggers: { prompt: { keywords: ['solo'] } } } },
+      null
+    );
+    const mainData = engine.loadRules(path.join(rulesDir, 'skill-rules.json'));
+    const merged = { ...mainData };
+    const out = engine.activate({ prompt: 'test solo', session_id: 'merge-5' }, merged);
+    assert.ok(out.includes('only-main'));
+  });
+
+  it('activate works when learned-rules.json is malformed', () => {
+    writeRulesFiles(
+      { 'only-main': { type: 'domain', description: 'Solo rule', triggers: { prompt: { keywords: ['solo'] } } } },
+      null
+    );
+    fs.writeFileSync(path.join(rulesDir, 'learned-rules.json'), 'not valid json');
+    const mainData = engine.loadRules(path.join(rulesDir, 'skill-rules.json'));
+    const learnedData = engine.loadRules(path.join(rulesDir, 'learned-rules.json'));
+    assert.equal(learnedData, null);
+    const merged = { ...mainData, rules: { ...(learnedData ? learnedData.rules : {}), ...mainData.rules } };
+    const out = engine.activate({ prompt: 'test solo', session_id: 'merge-6' }, merged);
+    assert.ok(out.includes('only-main'));
   });
 });

@@ -15,6 +15,18 @@ function findRulesFile(startDir) {
   }
 }
 
+function findLearnedRulesFile(startDir) {
+  let dir = path.resolve(startDir);
+  const root = path.parse(dir).root;
+  while (true) {
+    const candidate = path.join(dir, '.claude', 'skills', 'learned-rules.json');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir || dir === root) return null;
+    dir = parent;
+  }
+}
+
 function loadRules(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return null;
   try {
@@ -262,6 +274,7 @@ function enforce(input, rulesData) {
 
 module.exports = {
   findRulesFile,
+  findLearnedRulesFile,
   loadRules,
   matchKeywords,
   matchIntent,
@@ -291,6 +304,14 @@ if (require.main === module) {
   const rulesFile = findRulesFile(cwd);
   const rulesData = loadRules(rulesFile);
   if (!rulesData) process.exit(0);
+
+  // Merge learned rules if they exist
+  const learnedFile = findLearnedRulesFile(cwd);
+  const learnedData = loadRules(learnedFile);
+  if (learnedData) {
+    // Learned rules go first in spread so main rules win on collision
+    rulesData.rules = { ...learnedData.rules, ...rulesData.rules };
+  }
 
   if (mode === 'activate') {
     const output = activate(input, rulesData);
