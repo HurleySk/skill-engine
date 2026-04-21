@@ -46,7 +46,8 @@ Copy the hook scripts from the skill-engine plugin into the project:
 │       ├── activate.sh
 │       ├── enforce.sh
 │       └── lib/
-│           └── engine.js
+│           ├── engine.js
+│           └── learn.js
 └── skills/
     └── skill-rules.json    ← scaffold if doesn't exist
 ```
