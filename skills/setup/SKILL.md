@@ -79,6 +79,8 @@ cp "$PLUGIN_HOOKS/activate.sh" .claude/hooks/skill-engine/
 cp "$PLUGIN_HOOKS/enforce.sh" .claude/hooks/skill-engine/
 cp "$PLUGIN_HOOKS/lib/engine.js" .claude/hooks/skill-engine/lib/
 cp "$PLUGIN_HOOKS/lib/learn.js" .claude/hooks/skill-engine/lib/
+cp "$PLUGIN_HOOKS/lib/hook-manager.js" .claude/hooks/skill-engine/lib/
+cp "$PLUGIN_HOOKS/lib/skill-scaffold.js" .claude/hooks/skill-engine/lib/
 chmod +x .claude/hooks/skill-engine/activate.sh
 chmod +x .claude/hooks/skill-engine/enforce.sh
 ```
