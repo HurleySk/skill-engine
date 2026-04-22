@@ -29,10 +29,11 @@ function validate(hookType, entry) {
 
 function loadSettings(settingsPath) {
   if (!settingsPath || !fs.existsSync(settingsPath)) return null;
+  const raw = fs.readFileSync(settingsPath, 'utf8');
   try {
-    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    return JSON.parse(raw);
   } catch {
-    return null;
+    return { _parseError: true };
   }
 }
 
@@ -47,6 +48,9 @@ function add(hookType, entry, settingsPath) {
   if (!validation.ok) return validation;
 
   const settings = loadSettings(settingsPath) || {};
+  if (settings._parseError) {
+    return { ok: false, error: 'settings.json exists but contains invalid JSON. Fix it manually or delete it to start fresh.' };
+  }
   if (!settings.hooks) settings.hooks = {};
   if (!settings.hooks[hookType]) settings.hooks[hookType] = [];
 
@@ -87,6 +91,9 @@ function list(settingsPath) {
 
 function remove(hookType, command, settingsPath) {
   const settings = loadSettings(settingsPath);
+  if (settings && settings._parseError) {
+    return { ok: false, error: 'settings.json exists but contains invalid JSON. Fix it manually or delete it to start fresh.' };
+  }
   if (!settings || !settings.hooks || !settings.hooks[hookType] || !settings.hooks[hookType].length) {
     return { ok: false, error: `No hooks found for type "${hookType}".` };
   }

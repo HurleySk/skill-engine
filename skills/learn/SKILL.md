@@ -1,6 +1,6 @@
 ---
 name: learn
-description: Use when the user wants to capture a lesson learned as an enforcement rule. Persists best practices from the current session into learned-rules.json so they are automatically enforced in future edits.
+description: Capture a lesson learned as a rule, hook, or skill — classifies and routes to the right sub-skill.
 argument-hint: "[list|remove <rule-name>]"
 ---
 
