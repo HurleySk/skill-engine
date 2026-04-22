@@ -131,7 +131,41 @@ function update(ruleName, updates, filePath) {
   return { ok: true };
 }
 
-module.exports = { validateRule, normalizeTriggerPaths, loadLearnedFile, add, list, remove, update };
+function promote(ruleName, fromPath, toPath) {
+  const sourceData = loadLearnedFile(fromPath);
+  if (!sourceData || !sourceData.rules[ruleName]) {
+    return { ok: false, error: `Rule "${ruleName}" not found in source file.` };
+  }
+
+  const rule = sourceData.rules[ruleName];
+
+  let targetData = loadLearnedFile(toPath);
+  if (!targetData) {
+    targetData = { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {} };
+  }
+
+  if (targetData.rules[ruleName]) {
+    return { ok: false, error: `Rule "${ruleName}" already exists in target file.` };
+  }
+
+  // Write target first — if this fails, source is untouched
+  targetData.rules[ruleName] = rule;
+  const targetDir = path.dirname(toPath);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(toPath, JSON.stringify(targetData, null, 2), 'utf8');
+
+  // Remove from source
+  delete sourceData.rules[ruleName];
+  try {
+    fs.writeFileSync(fromPath, JSON.stringify(sourceData, null, 2), 'utf8');
+  } catch (err) {
+    return { ok: false, error: `Rule added to target but failed to remove from source: ${err.message}` };
+  }
+
+  return { ok: true };
+}
+
+module.exports = { validateRule, normalizeTriggerPaths, loadLearnedFile, add, list, remove, update, promote };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
@@ -182,8 +216,43 @@ if (require.main === module) {
       process.stderr.write(`Error: ${result.error}\n`);
       process.exit(1);
     }
+  } else if (command === 'update') {
+    const ruleName = args[1];
+    let updatesJson;
+    try {
+      updatesJson = JSON.parse(args[2]);
+    } catch {
+      process.stderr.write('Error: Invalid JSON for updates.\n');
+      process.exit(1);
+    }
+    const result = update(ruleName, updatesJson, filePath);
+    if (result.ok) {
+      process.stdout.write(`Rule "${ruleName}" updated in ${filePath}\n`);
+    } else {
+      process.stderr.write(`Error: ${result.error}\n`);
+      process.exit(1);
+    }
+  } else if (command === 'promote') {
+    const ruleName = args[1];
+    const toIdx = args.indexOf('--to');
+    let toPath;
+    if (toIdx !== -1 && args[toIdx + 1]) {
+      toPath = args[toIdx + 1];
+    } else {
+      const { findRulesFile } = require('./engine.js');
+      const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+      const rulesFile = findRulesFile(cwd);
+      toPath = rulesFile || path.join(cwd, '.claude', 'skills', 'skill-rules.json');
+    }
+    const result = promote(ruleName, filePath, toPath);
+    if (result.ok) {
+      process.stdout.write(`Rule "${ruleName}" promoted from ${filePath} to ${toPath}\n`);
+    } else {
+      process.stderr.write(`Error: ${result.error}\n`);
+      process.exit(1);
+    }
   } else {
-    process.stderr.write('Usage: node learn.js <add|list|remove> [args] [--file path]\n');
+    process.stderr.write('Usage: node learn.js <add|list|remove|update|promote> [args] [--file path]\n');
     process.exit(1);
   }
 }

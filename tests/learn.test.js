@@ -297,6 +297,93 @@ describe('update', () => {
   });
 });
 
+describe('promote', () => {
+  let tmpDir;
+  let learnedFile;
+  let rulesFile;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'learn-test-'));
+    learnedFile = path.join(tmpDir, 'learned-rules.json');
+    rulesFile = path.join(tmpDir, 'skill-rules.json');
+    learn.add('promote-me', {
+      type: 'guardrail',
+      enforcement: 'warn',
+      priority: 'medium',
+      description: 'A rule to promote',
+      triggers: { file: { pathPatterns: ['**/*.sql'] } }
+    }, learnedFile);
+    fs.writeFileSync(rulesFile, JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {}
+    }, null, 2), 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('moves rule from learned to skill-rules', () => {
+    const result = learn.promote('promote-me', learnedFile, rulesFile);
+    assert.equal(result.ok, true);
+    const learned = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.equal(learned.rules['promote-me'], undefined);
+    const rules = JSON.parse(fs.readFileSync(rulesFile, 'utf8'));
+    assert.ok(rules.rules['promote-me']);
+    assert.equal(rules.rules['promote-me'].description, 'A rule to promote');
+  });
+
+  it('preserves existing rules in target file', () => {
+    const rulesData = JSON.parse(fs.readFileSync(rulesFile, 'utf8'));
+    rulesData.rules['existing'] = {
+      type: 'domain',
+      description: 'Already here',
+      triggers: { prompt: { keywords: ['test'] } }
+    };
+    fs.writeFileSync(rulesFile, JSON.stringify(rulesData, null, 2), 'utf8');
+    learn.promote('promote-me', learnedFile, rulesFile);
+    const rules = JSON.parse(fs.readFileSync(rulesFile, 'utf8'));
+    assert.ok(rules.rules['existing']);
+    assert.ok(rules.rules['promote-me']);
+  });
+
+  it('errors when rule does not exist in source', () => {
+    const result = learn.promote('nonexistent', learnedFile, rulesFile);
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes('not found'));
+  });
+
+  it('errors when source file does not exist', () => {
+    const result = learn.promote('anything', '/nonexistent/file.json', rulesFile);
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes('not found'));
+  });
+
+  it('errors when rule name already exists in target', () => {
+    const rulesData = JSON.parse(fs.readFileSync(rulesFile, 'utf8'));
+    rulesData.rules['promote-me'] = {
+      type: 'domain',
+      description: 'Conflict',
+      triggers: { prompt: { keywords: ['conflict'] } }
+    };
+    fs.writeFileSync(rulesFile, JSON.stringify(rulesData, null, 2), 'utf8');
+    const result = learn.promote('promote-me', learnedFile, rulesFile);
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes('already exists'));
+    const learned = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.ok(learned.rules['promote-me']);
+  });
+
+  it('creates target file if it does not exist', () => {
+    const newTarget = path.join(tmpDir, 'new-rules.json');
+    const result = learn.promote('promote-me', learnedFile, newTarget);
+    assert.equal(result.ok, true);
+    const rules = JSON.parse(fs.readFileSync(newTarget, 'utf8'));
+    assert.ok(rules.rules['promote-me']);
+  });
+});
+
 describe('CLI', () => {
   let tmpDir;
   let learnedFile;
@@ -361,6 +448,50 @@ describe('CLI', () => {
     assert.ok(output.includes('to-delete'));
     const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
     assert.equal(data.rules['to-delete'], undefined);
+  });
+
+  it('update via CLI merges triggers', () => {
+    const seedJson = JSON.stringify({
+      type: 'guardrail', description: 'CLI update test',
+      triggers: { file: { pathPatterns: ['**/*.sql'] } }
+    });
+    execSync(
+      `node "${learnScript}" add cli-update '${seedJson}' --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    const updateJson = JSON.stringify({
+      triggers: { file: { pathPatterns: ['**/*.psql'] } }
+    });
+    const output = execSync(
+      `node "${learnScript}" update cli-update '${updateJson}' --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    assert.ok(output.includes('cli-update'));
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.ok(data.rules['cli-update'].triggers.file.pathPatterns.includes('**/*.psql'));
+    assert.ok(data.rules['cli-update'].triggers.file.pathPatterns.includes('**/*.sql'));
+  });
+
+  it('promote via CLI moves rule to target file', () => {
+    const seedJson = JSON.stringify({
+      type: 'guardrail', description: 'CLI promote test',
+      triggers: { file: { pathPatterns: ['**/*.sql'] } }
+    });
+    execSync(
+      `node "${learnScript}" add cli-promote '${seedJson}' --file "${learnedFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    const targetFile = path.join(tmpDir, 'skill-rules.json');
+    fs.writeFileSync(targetFile, JSON.stringify({ version: '1.0', defaults: {}, rules: {} }), 'utf8');
+    const output = execSync(
+      `node "${learnScript}" promote cli-promote --file "${learnedFile}" --to "${targetFile}"`,
+      { encoding: 'utf8', shell: 'bash' }
+    );
+    assert.ok(output.includes('promoted'));
+    const target = JSON.parse(fs.readFileSync(targetFile, 'utf8'));
+    assert.ok(target.rules['cli-promote']);
+    const source = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.equal(source.rules['cli-promote'], undefined);
   });
 
   it('add via CLI exits 1 on validation error', () => {
