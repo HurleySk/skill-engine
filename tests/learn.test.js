@@ -212,6 +212,91 @@ describe('remove', () => {
   });
 });
 
+describe('update', () => {
+  let tmpDir;
+  let learnedFile;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'learn-test-'));
+    learnedFile = path.join(tmpDir, 'learned-rules.json');
+    // Seed a rule to update
+    learn.add('sql-warn', {
+      type: 'guardrail',
+      enforcement: 'warn',
+      priority: 'medium',
+      description: 'Warn on SQL files',
+      triggers: { file: { pathPatterns: ['**/*.sql'] } }
+    }, learnedFile);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('merges new pathPatterns into existing triggers', () => {
+    const result = learn.update('sql-warn', {
+      triggers: { file: { pathPatterns: ['**/*.psql'] } }
+    }, learnedFile);
+    assert.equal(result.ok, true);
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    const patterns = data.rules['sql-warn'].triggers.file.pathPatterns;
+    assert.deepEqual(patterns, ['**/*.sql', '**/*.psql']);
+  });
+
+  it('updates top-level fields without touching triggers', () => {
+    const result = learn.update('sql-warn', {
+      enforcement: 'block',
+      priority: 'high'
+    }, learnedFile);
+    assert.equal(result.ok, true);
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.equal(data.rules['sql-warn'].enforcement, 'block');
+    assert.equal(data.rules['sql-warn'].priority, 'high');
+    assert.deepEqual(data.rules['sql-warn'].triggers.file.pathPatterns, ['**/*.sql']);
+  });
+
+  it('adds prompt triggers to a rule that only had file triggers', () => {
+    const result = learn.update('sql-warn', {
+      triggers: { prompt: { keywords: ['sql', 'query'] } }
+    }, learnedFile);
+    assert.equal(result.ok, true);
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.deepEqual(data.rules['sql-warn'].triggers.prompt.keywords, ['sql', 'query']);
+    assert.deepEqual(data.rules['sql-warn'].triggers.file.pathPatterns, ['**/*.sql']);
+  });
+
+  it('errors when rule does not exist', () => {
+    const result = learn.update('nonexistent', { enforcement: 'block' }, learnedFile);
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes('not found'));
+  });
+
+  it('errors when file does not exist', () => {
+    const result = learn.update('anything', { enforcement: 'block' }, '/nonexistent/file.json');
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes('not found'));
+  });
+
+  it('normalizes backslash paths in updated triggers', () => {
+    const result = learn.update('sql-warn', {
+      triggers: { file: { pathPatterns: ['src\\db\\**\\*.psql'] } }
+    }, learnedFile);
+    assert.equal(result.ok, true);
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    assert.ok(data.rules['sql-warn'].triggers.file.pathPatterns.includes('src/db/**/*.psql'));
+  });
+
+  it('deduplicates pathPatterns on merge', () => {
+    const result = learn.update('sql-warn', {
+      triggers: { file: { pathPatterns: ['**/*.sql', '**/*.psql'] } }
+    }, learnedFile);
+    assert.equal(result.ok, true);
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    const patterns = data.rules['sql-warn'].triggers.file.pathPatterns;
+    assert.equal(patterns.filter(p => p === '**/*.sql').length, 1);
+  });
+});
+
 describe('CLI', () => {
   let tmpDir;
   let learnedFile;

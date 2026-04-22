@@ -91,7 +91,47 @@ function remove(ruleName, filePath) {
   return { ok: true };
 }
 
-module.exports = { validateRule, normalizeTriggerPaths, loadLearnedFile, add, list, remove };
+function update(ruleName, updates, filePath) {
+  const data = loadLearnedFile(filePath);
+  if (!data || !data.rules[ruleName]) {
+    return { ok: false, error: `Rule "${ruleName}" not found.` };
+  }
+
+  const rule = data.rules[ruleName];
+
+  // Merge triggers specially — append arrays, don't replace
+  if (updates.triggers) {
+    if (!rule.triggers) rule.triggers = {};
+    for (const [triggerType, triggerUpdates] of Object.entries(updates.triggers)) {
+      if (!rule.triggers[triggerType]) {
+        rule.triggers[triggerType] = triggerUpdates;
+      } else {
+        for (const [key, value] of Object.entries(triggerUpdates)) {
+          if (Array.isArray(value) && Array.isArray(rule.triggers[triggerType][key])) {
+            const merged = [...rule.triggers[triggerType][key], ...value];
+            rule.triggers[triggerType][key] = [...new Set(merged)];
+          } else {
+            rule.triggers[triggerType][key] = value;
+          }
+        }
+      }
+    }
+  }
+
+  // Merge top-level fields (skip triggers — already handled)
+  for (const [key, value] of Object.entries(updates)) {
+    if (key !== 'triggers') {
+      rule[key] = value;
+    }
+  }
+
+  // Normalize paths after merge
+  data.rules[ruleName] = normalizeTriggerPaths(rule);
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+  return { ok: true };
+}
+
+module.exports = { validateRule, normalizeTriggerPaths, loadLearnedFile, add, list, remove, update };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
