@@ -108,7 +108,8 @@ function update(ruleName, updates, filePath) {
       } else {
         for (const [key, value] of Object.entries(triggerUpdates)) {
           if (Array.isArray(value) && Array.isArray(rule.triggers[triggerType][key])) {
-            const merged = [...rule.triggers[triggerType][key], ...value];
+            const normalizedValue = value.map(v => typeof v === 'string' ? normalizePath(v) : v);
+            const merged = [...rule.triggers[triggerType][key], ...normalizedValue];
             rule.triggers[triggerType][key] = [...new Set(merged)];
           } else {
             rule.triggers[triggerType][key] = value;

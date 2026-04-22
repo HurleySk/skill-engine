@@ -295,6 +295,21 @@ describe('update', () => {
     const patterns = data.rules['sql-warn'].triggers.file.pathPatterns;
     assert.equal(patterns.filter(p => p === '**/*.sql').length, 1);
   });
+
+  it('deduplicates cross-format paths (backslash vs forward-slash)', () => {
+    // First add a forward-slash pattern
+    learn.update('sql-warn', {
+      triggers: { file: { pathPatterns: ['src/db/**/*.sql'] } }
+    }, learnedFile);
+    // Now add the same pattern with backslashes
+    const result = learn.update('sql-warn', {
+      triggers: { file: { pathPatterns: ['src\\db\\**\\*.sql'] } }
+    }, learnedFile);
+    assert.equal(result.ok, true);
+    const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+    const patterns = data.rules['sql-warn'].triggers.file.pathPatterns;
+    assert.equal(patterns.filter(p => p === 'src/db/**/*.sql').length, 1);
+  });
 });
 
 describe('promote', () => {
