@@ -18,13 +18,22 @@ function validate(hookType, entry) {
   if (!entry || typeof entry.command !== 'string' || !entry.command.trim()) {
     return { ok: false, error: 'Hook entry must have a non-empty command string.' };
   }
-  if (entry.matcher !== undefined && !Array.isArray(entry.matcher)) {
-    return { ok: false, error: 'Hook matcher must be an array of strings.' };
+  // matcher can be a string ("Edit|Write") or array (["Edit", "Write"]) — normalized to string on save
+  if (entry.matcher !== undefined && typeof entry.matcher !== 'string' && !Array.isArray(entry.matcher)) {
+    return { ok: false, error: 'Hook matcher must be a string (pipe-separated) or array of strings.' };
   }
-  if (entry.matcher && !entry.matcher.every(m => typeof m === 'string')) {
-    return { ok: false, error: 'Hook matcher must be an array of strings.' };
+  if (Array.isArray(entry.matcher) && !entry.matcher.every(m => typeof m === 'string')) {
+    return { ok: false, error: 'Hook matcher array entries must be strings.' };
   }
   return { ok: true };
+}
+
+// Normalize matcher to pipe-separated string (Claude Code format)
+function normalizeMatcher(matcher) {
+  if (!matcher) return undefined;
+  if (typeof matcher === 'string') return matcher;
+  if (Array.isArray(matcher)) return matcher.join('|');
+  return String(matcher);
 }
 
 function loadSettings(settingsPath) {
@@ -54,15 +63,38 @@ function add(hookType, entry, settingsPath) {
   if (!settings.hooks) settings.hooks = {};
   if (!settings.hooks[hookType]) settings.hooks[hookType] = [];
 
-  const isDuplicate = settings.hooks[hookType].some(h => h.command === entry.command);
+  // Claude Code hook format: { matcher: "Edit|Write", hooks: [{ type: "command", command: "..." }] }
+  const matcherStr = normalizeMatcher(entry.matcher);
+
+  // Check for duplicate: same command in any entry with the same matcher
+  const isDuplicate = settings.hooks[hookType].some(group => {
+    const groupMatcher = group.matcher || '';
+    const targetMatcher = matcherStr || '';
+    if (groupMatcher !== targetMatcher) return false;
+    return Array.isArray(group.hooks) && group.hooks.some(h => h.command === entry.command);
+  });
   if (isDuplicate) {
     return { ok: false, error: `A hook with this command already exists in ${hookType} (duplicate).` };
   }
 
-  const clean = { command: entry.command };
-  if (entry.matcher) clean.matcher = entry.matcher;
+  // Try to append to an existing group with the same matcher
+  const existingGroup = settings.hooks[hookType].find(group => {
+    const groupMatcher = group.matcher || '';
+    const targetMatcher = matcherStr || '';
+    return groupMatcher === targetMatcher;
+  });
 
-  settings.hooks[hookType].push(clean);
+  const hookEntry = { type: 'command', command: entry.command };
+
+  if (existingGroup && Array.isArray(existingGroup.hooks)) {
+    existingGroup.hooks.push(hookEntry);
+  } else {
+    // Create new group
+    const newGroup = { hooks: [hookEntry] };
+    if (matcherStr) newGroup.matcher = matcherStr;
+    settings.hooks[hookType].push(newGroup);
+  }
+
   saveSettings(settingsPath, settings);
   return { ok: true };
 }
@@ -74,14 +106,20 @@ function list(settingsPath) {
   }
 
   const lines = ['Hooks:', ''];
-  for (const [hookType, entries] of Object.entries(settings.hooks)) {
-    if (!Array.isArray(entries) || !entries.length) continue;
+  for (const [hookType, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups) || !groups.length) continue;
     lines.push(`  ${hookType}:`);
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      lines.push(`    [${i}] ${e.command}`);
-      if (e.matcher) {
-        lines.push(`        matcher: ${e.matcher.join(', ')}`);
+    for (let g = 0; g < groups.length; g++) {
+      const group = groups[g];
+      const matcher = group.matcher || '(all tools)';
+      lines.push(`    [${g}] matcher: ${matcher}`);
+      if (Array.isArray(group.hooks)) {
+        for (const h of group.hooks) {
+          lines.push(`        → ${h.command}`);
+        }
+      } else if (group.command) {
+        // Legacy flat format
+        lines.push(`        → ${group.command} (legacy format)`);
       }
     }
     lines.push('');
@@ -98,17 +136,33 @@ function remove(hookType, command, settingsPath) {
     return { ok: false, error: `No hooks found for type "${hookType}".` };
   }
 
-  const idx = settings.hooks[hookType].findIndex(h => h.command === command);
-  if (idx === -1) {
-    return { ok: false, error: `Hook with command "${command}" not found in ${hookType}.` };
+  // Search all groups for the command
+  for (let g = 0; g < settings.hooks[hookType].length; g++) {
+    const group = settings.hooks[hookType][g];
+    if (Array.isArray(group.hooks)) {
+      const idx = group.hooks.findIndex(h => h.command === command);
+      if (idx !== -1) {
+        group.hooks.splice(idx, 1);
+        // Remove empty group
+        if (group.hooks.length === 0) {
+          settings.hooks[hookType].splice(g, 1);
+        }
+        saveSettings(settingsPath, settings);
+        return { ok: true };
+      }
+    }
+    // Legacy flat format
+    if (group.command === command) {
+      settings.hooks[hookType].splice(g, 1);
+      saveSettings(settingsPath, settings);
+      return { ok: true };
+    }
   }
 
-  settings.hooks[hookType].splice(idx, 1);
-  saveSettings(settingsPath, settings);
-  return { ok: true };
+  return { ok: false, error: `Hook with command "${command}" not found in ${hookType}.` };
 }
 
-module.exports = { validate, add, list, remove, KNOWN_HOOK_TYPES };
+module.exports = { validate, normalizeMatcher, add, list, remove, KNOWN_HOOK_TYPES };
 
 // ── CLI entry point ─────────────────────────────────────────────────
 if (require.main === module) {
