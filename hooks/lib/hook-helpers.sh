@@ -3,8 +3,9 @@
 # Source this file: . "$CLAUDE_PROJECT_DIR/.claude/hooks/lib/hook-helpers.sh"
 
 # Parse the command string from hook JSON input (pass $INPUT as $1)
+# Uses jq for fast JSON parsing (~0.2s vs ~0.3s for node cold-start on Windows)
 parse_command() {
-  echo "$1" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).tool_input.command||'')}catch{}})" 2>/dev/null
+  echo "$1" | jq -r '.tool_input.command // empty' 2>/dev/null
 }
 
 # Emit a deny decision and exit

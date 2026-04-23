@@ -54,7 +54,8 @@ See `skills/rules/SKILL.md` for the full schema and trigger pattern reference.
 
 ## Requirements
 
-- Node.js (any recent version)
+- Node.js (any recent version) — for engine.js and learn.js
+- **jq** — for fast JSON parsing in hook scripts (much faster than node cold-start on Windows)
 - Claude Code with hooks support
 - Bash (Git Bash on Windows)
 
