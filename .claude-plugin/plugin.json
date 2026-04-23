@@ -1,6 +1,6 @@
 {
   "name": "skill-engine",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Lesson capture (rules, hooks, skills) and skill scaffolding for Claude Code projects. Hook-based activation/enforcement removed in v2 for performance.",
   "author": {
     "name": "Samuel Hurley",
