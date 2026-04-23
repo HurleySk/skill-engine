@@ -1,63 +1,68 @@
 # Skill Engine
 
-Hook-driven skill activation and guardrail enforcement for Claude Code projects.
+Lesson capture and skill scaffolding for Claude Code projects.
 
-## What It Does
+## v2.0.0 — Breaking Change
 
-Skill Engine reads a `skill-rules.json` file from your project and uses Claude Code hooks to:
+**Hook-based activation and enforcement have been removed.**
 
-- **Suggest relevant skills** when your prompt mentions related topics (UserPromptSubmit)
-- **Enforce guardrails** when editing files that match rule patterns (PreToolUse — can warn or block)
-- **Skip intelligently** via env vars, file markers, or session-once tracking
+### Why
 
-## Quick Start
+Every Claude Code hook spawns a new process on each invocation. On Windows (Git Bash), each process spawn costs ~0.2-0.5s. Skill Engine v1 registered two hooks (activate on UserPromptSubmit, enforce on PreToolUse), which added ~0.5-0.7s of latency to every prompt submission and every tool call. This overhead scales linearly with the number of hooks and is unacceptable for interactive use.
 
-1. Install from marketplace:
-   ```
-   claude install hurleysk-marketplace/skill-engine
-   ```
+Claude Code's built-in skill activation (prompt-matching in CLAUDE.md and plugin skill descriptions) handles the suggestion use case without process spawns. Guardrail enforcement is better done in project-specific hooks that only fire when needed, rather than a generic engine that runs on every action.
 
-2. Set up in your project:
-   ```
-   /skill-engine:setup
-   ```
+### What Remains
 
-3. Add rules:
-   ```
-   /skill-engine:rules add
-   ```
+| Skill | Purpose | Status |
+|---|---|---|
+| `/skill-engine:learn-skill` | Capture a multi-step workflow as a reusable SKILL.md file | **Active** |
+| `/skill-engine:learn` | Triage router — classifies a lesson and routes to the right sub-skill | **Active** |
+| `/skill-engine:learn-rule` | Capture a lesson as an activation rule | **Deprecated** — feeds the removed hook system |
+| `/skill-engine:learn-hook` | Capture a lesson as a Claude Code hook entry | **Deprecated** — feeds the removed hook system |
+| `/skill-engine:setup` | Install hooks and scaffold rules | **Deprecated** — hooks removed |
+| `/skill-engine:rules` | Add, list, and test activation rules | **Deprecated** — hooks removed |
 
-## How It Works
+### What Was Removed
 
-```
-User prompt → activate.sh → reads skill-rules.json → suggests matching skills
-Claude edits → enforce.sh → reads skill-rules.json → blocks/warns on guardrail rules
-```
-
-### skill-rules.json
-
-Lives at `.claude/skills/skill-rules.json` in your project. Each rule defines:
-
-- **type**: `domain` (guidance) or `guardrail` (enforcement)
-- **enforcement**: `suggest`, `warn`, or `block`
-- **triggers**: prompt keywords/patterns and/or file path/content patterns
-- **skipConditions**: env vars, file markers, session-once
-
-See `skills/rules/SKILL.md` for the full schema and trigger pattern reference.
+- `hooks/activate.sh` and `hooks/enforce.sh` are no longer registered in the plugin config. The scripts remain on disk for reference but are not executed.
+- `hooks/lib/engine.js` (the activation/enforcement engine) is no longer invoked by any hook.
+- `skill-rules.json` is no longer read at runtime. Existing rule files are inert.
 
 ## Skills
 
-| Skill | Purpose |
-|---|---|
-| `/skill-engine:setup` | Install hooks, scaffold rules, configure settings.json |
-| `/skill-engine:rules` | Add, list, and test activation rules |
+### learn-skill (active)
+
+Capture a multi-step workflow or process as a reusable SKILL.md file. Scaffolds project-local skills in `.claude/skills/`.
+
+```
+/skill-engine:learn-skill
+```
+
+### learn (active)
+
+Triage router that classifies a lesson learned and routes to the appropriate sub-skill (rule, hook, or skill).
+
+```
+/skill-engine:learn
+```
 
 ## Requirements
 
-- Node.js (any recent version) — for engine.js and learn.js
-- **jq** — for fast JSON parsing in hook scripts (much faster than node cold-start on Windows)
-- Claude Code with hooks support
+- **Node.js** (any recent version) — used by learn-skill for scaffolding
+- **jq** — used by hook-helpers.sh (only needed if referencing the library from other hooks)
+- Claude Code with skills support
 - Bash (Git Bash on Windows)
+
+## Migration from v1
+
+If you previously installed skill-engine v1.x, you may have hook entries in your project's `.claude/settings.json` referencing `activate.sh` and `enforce.sh`. To clean up:
+
+1. Open `.claude/settings.json` (or `settings.local.json`)
+2. Find and remove any hook entries whose `command` references `skill-engine/hooks/activate.sh` or `skill-engine/hooks/enforce.sh`
+3. The `skill-rules.json` file in your project can be deleted or kept for reference — it is no longer read at runtime
+
+Alternatively, run `/skill-engine:setup` which will detect the v2 state and offer to remove stale hook entries.
 
 ## License
 
