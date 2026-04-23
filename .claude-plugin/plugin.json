@@ -1,6 +1,6 @@
 {
   "name": "skill-engine",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Hook-driven skill activation, guardrail enforcement, lesson capture (rules, hooks, skills), and shared hook utilities for Claude Code projects.",
   "author": {
     "name": "Samuel Hurley",
