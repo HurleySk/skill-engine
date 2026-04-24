@@ -1,6 +1,6 @@
 ---
 name: learn-rule
-description: Capture a lesson as an enforcement rule, update an existing rule's triggers, or promote a learned rule to permanent. Operates on learned-rules.json and skill-rules.json.
+description: Capture a lesson as an enforcement rule, update an existing rule's triggers, or promote a learned rule to permanent. Rules are enforced by the skill-engine HTTP server.
 argument-hint: "[update <rule-name>|promote <rule-name>]"
 ---
 

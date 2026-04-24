@@ -1,12 +1,12 @@
 ---
 name: learn
-description: Capture a lesson learned as a rule, hook, or skill — classifies and routes to the right sub-skill.
+description: Capture a lesson learned as a rule or skill — classifies and routes to the right sub-skill.
 argument-hint: "[list|remove <rule-name>]"
 ---
 
 # Skill Engine — Learn
 
-You help users capture lessons learned during agent sessions and persist them as the right artifact — a rule, a hook, or a skill.
+You help users capture lessons learned during agent sessions and persist them as the right artifact — a rule or a skill.
 
 ## Commands
 
@@ -53,21 +53,17 @@ Based on what the user described, determine the best artifact type:
 | Signal | Artifact | Route to |
 |---|---|---|
 | "warn/block/never/always when editing X files" | Enforcement rule | `/skill-engine:learn-rule` |
-| "run [tool] before/after [action]", automate a command | Claude Code hook | `/skill-engine:learn-hook` |
 | "when doing X, follow these steps", multi-step process | Reusable skill | `/skill-engine:learn-skill` |
 | "update/change that rule to also cover..." | Rule update | `/skill-engine:learn-rule update` |
 | "make that learned rule permanent" | Rule promotion | `/skill-engine:learn-rule promote` |
 
-**If ambiguous**, ask one clarifying question. Example:
-
-> "Should this lint Bicep files automatically (a hook that runs the linter), or warn you when editing Bicep files without linting (a rule)?"
+**If ambiguous**, ask one clarifying question.
 
 ### Step 3: Route
 
 Once classified, tell the user what you're doing and follow the appropriate sub-skill:
 
 - **Rule**: Follow `/skill-engine:learn-rule`
-- **Hook**: Follow `/skill-engine:learn-hook`
 - **Skill**: Follow `/skill-engine:learn-skill`
 
 Pass along the lesson context so the user doesn't have to re-explain.
