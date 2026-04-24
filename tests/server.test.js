@@ -232,3 +232,138 @@ describe('Enforce Endpoint', () => {
     assert.equal(res.body.decision, 'allow');
   });
 });
+
+describe('Reload Endpoint', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  let rulesFile;
+  const PORT = 19754;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-reload-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    rulesFile = path.join(rulesDir, 'skill-rules.json');
+    fs.writeFileSync(rulesFile, JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'old-rule': {
+          type: 'domain',
+          description: 'Old rule',
+          triggers: { prompt: { keywords: ['old'] } }
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('POST /reload picks up new rules', async () => {
+    // 1. Verify old rule matches
+    const before = await request('POST', '/activate', { prompt: 'old keyword here' }, PORT);
+    assert.ok(before.body.result.includes('old-rule'), 'old-rule should match before reload');
+
+    // 2. Overwrite rules file with new rule
+    fs.writeFileSync(rulesFile, JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'new-rule': {
+          type: 'domain',
+          description: 'New rule',
+          triggers: { prompt: { keywords: ['new'] } }
+        }
+      }
+    }));
+
+    // 3. POST /reload
+    const reload = await request('POST', '/reload', null, PORT);
+    assert.equal(reload.status, 200);
+    assert.equal(reload.body.reloaded, true);
+    assert.equal(reload.body.rulesLoaded, 1);
+
+    // 4. Verify old rule no longer matches
+    const oldCheck = await request('POST', '/activate', { prompt: 'old keyword here' }, PORT);
+    assert.equal(oldCheck.body.result, '', 'old-rule should not match after reload');
+
+    // 5. Verify new rule matches
+    const newCheck = await request('POST', '/activate', { prompt: 'new keyword here' }, PORT);
+    assert.ok(newCheck.body.result.includes('new-rule'), 'new-rule should match after reload');
+  });
+});
+
+describe('Kill Switch', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  let testSqlFile;
+  const PORT = 19755;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-killswitch-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'block-rule': {
+          type: 'guardrail',
+          description: 'Block SQL files',
+          enforcement: 'block',
+          blockMessage: 'SQL blocked',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.sql']
+            }
+          }
+        }
+      }
+    }));
+
+    testSqlFile = path.join(tmpDir, 'test.sql');
+    fs.writeFileSync(testSqlFile, 'SELECT 1');
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], {
+      stdio: 'pipe',
+      env: { ...process.env, SKILL_ENGINE_OFF: '1' }
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('activate returns empty when SKILL_ENGINE_OFF=1', async () => {
+    const res = await request('POST', '/activate', { prompt: 'anything matching block-rule' }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.result, '');
+  });
+
+  it('enforce returns allow when SKILL_ENGINE_OFF=1', async () => {
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.decision, 'allow');
+  });
+});
