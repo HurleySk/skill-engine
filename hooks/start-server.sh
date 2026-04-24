@@ -26,6 +26,23 @@ if [ -n "$HEALTH" ]; then
   if [ -n "$OLD_PID" ]; then
     kill "$OLD_PID" 2>/dev/null
     sleep 1
+  else
+    # Old server has no pid in health (pre-3.0.7) — find and kill by port
+    node -e "
+      const net = require('net');
+      const c = net.createConnection($PORT, '127.0.0.1');
+      c.on('connect', () => { c.destroy(); process.exit(0); });
+      c.on('error', () => process.exit(1));
+    " 2>/dev/null
+    if [ $? -eq 0 ]; then
+      # Port is occupied — use platform-appropriate kill
+      if command -v lsof >/dev/null 2>&1; then
+        kill $(lsof -ti "tcp:$PORT") 2>/dev/null
+      elif command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -Command "Stop-Process -Id (Get-NetTCPConnection -LocalPort $PORT -ErrorAction SilentlyContinue).OwningProcess -Force -ErrorAction SilentlyContinue" 2>/dev/null
+      fi
+      sleep 1
+    fi
   fi
   echo "skill-engine: restarted ($RUNNING_VERSION → $CURRENT_VERSION)"
 fi
