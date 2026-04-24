@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { normalizePath, loadRules } = require('./engine.js');
+const { normalizePath, loadRules } = require('./rules-io.js');
 
 const REQUIRED_FIELDS = ['type', 'description', 'triggers'];
 
@@ -178,8 +178,8 @@ if (require.main === module) {
   if (fileIdx !== -1 && args[fileIdx + 1]) {
     filePath = args[fileIdx + 1];
   } else {
-    // Default: find .claude/skills/ from cwd using engine's findRulesFile
-    const { findRulesFile } = require('./engine.js');
+    // Default: find .claude/skills/ from cwd using rules-io's findRulesFile
+    const { findRulesFile } = require('./rules-io.js');
     const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const rulesFile = findRulesFile(cwd);
     if (rulesFile) {
@@ -240,7 +240,7 @@ if (require.main === module) {
     if (toIdx !== -1 && args[toIdx + 1]) {
       toPath = args[toIdx + 1];
     } else {
-      const { findRulesFile } = require('./engine.js');
+      const { findRulesFile } = require('./rules-io.js');
       const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
       const rulesFile = findRulesFile(cwd);
       toPath = rulesFile || path.join(cwd, '.claude', 'skills', 'skill-rules.json');
