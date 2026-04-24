@@ -28,6 +28,24 @@ function request(method, urlPath, body, port) {
   });
 }
 
+function requestRaw(method, urlPath, body, port) {
+  port = port || TEST_PORT;
+  return new Promise((resolve, reject) => {
+    const options = { hostname: 'localhost', port, path: urlPath, method,
+      headers: body ? { 'Content-Type': 'application/json' } : {} };
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        resolve({ status: res.statusCode, headers: res.headers, body: data, raw: data });
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
 describe('Server Health', () => {
   let serverProcess;
   let tmpDir;
@@ -64,6 +82,11 @@ describe('Server Health', () => {
     assert.equal(typeof res.body.uptime, 'number');
     assert.equal(res.body.rulesLoaded, 1);
     assert.equal(typeof res.body.port, 'number');
+  });
+
+  it('GET /health includes timing stats', async () => {
+    const res = await request('GET', '/health');
+    assert.equal(typeof res.body.avgResponseTimeMs, 'number');
   });
 });
 
@@ -140,6 +163,12 @@ describe('Activate Endpoint', () => {
     assert.ok(highIdx !== -1, 'should contain HIGH priority');
     assert.ok(medIdx !== -1, 'should contain MEDIUM priority');
     assert.ok(highIdx < medIdx, 'HIGH should appear before MEDIUM');
+  });
+
+  it('POST /activate returns X-Response-Time header', async () => {
+    const res = await requestRaw('POST', '/activate', { prompt: 'test-keyword', session_id: 'timing-1' }, 19752);
+    assert.ok(res.headers['x-response-time'], 'should have X-Response-Time header');
+    assert.ok(res.headers['x-response-time'].endsWith('ms'), 'should end with ms');
   });
 });
 
