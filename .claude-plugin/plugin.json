@@ -1,7 +1,7 @@
 {
   "name": "skill-engine",
-  "version": "2.0.1",
-  "description": "Lesson capture (rules, hooks, skills) and skill scaffolding for Claude Code projects. Hook-based activation/enforcement removed in v2 for performance.",
+  "version": "3.0.0",
+  "description": "Rule-based skill activation and guardrail enforcement for Claude Code. Uses a persistent HTTP server for near-zero latency on every tool call.",
   "author": {
     "name": "Samuel Hurley",
     "url": "https://github.com/HurleySk"
@@ -11,8 +11,30 @@
   "repository": "https://github.com/HurleySk/skill-engine",
   "keywords": [
     "skills",
+    "rules",
+    "enforcement",
     "learn",
     "scaffold",
     "claude-code"
-  ]
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/start-server.sh\""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "http",
+        "url": "http://localhost:19750/activate"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "http",
+        "url": "http://localhost:19750/enforce"
+      }
+    ]
+  }
 }
