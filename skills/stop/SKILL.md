@@ -1,11 +1,11 @@
 ---
 name: stop
-description: Stop the skill-engine HTTP server. Hooks will silently no-op until it is restarted.
+description: Pause the skill-engine HTTP server. Hooks will silently no-op until it is resumed.
 ---
 
-# Skill Engine — Stop
+# Skill Engine — Stop (Pause)
 
-Stop the rule enforcement server. After stopping, HTTP hooks will silently no-op — Claude Code is unaffected.
+Pause the rule enforcement server. After pausing, all HTTP hooks return empty responses — Claude Code is unaffected.
 
 ## Steps
 
@@ -15,26 +15,22 @@ Stop the rule enforcement server. After stopping, HTTP hooks will silently no-op
 curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 ```
 
-2. **If not running**, tell the user:
+2. **If not running** (connection refused), tell the user:
 
-> Skill Engine server is not running. Nothing to stop.
+> Skill Engine server is not running. Nothing to pause.
 
-3. **If running**, find and kill the process:
+3. **If running**, pause it:
 
-On macOS/Linux:
 ```bash
-kill $(lsof -ti:${SKILL_ENGINE_PORT:-19750}) 2>/dev/null
+curl -s -X POST http://localhost:${SKILL_ENGINE_PORT:-19750}/pause
 ```
 
-On Windows (Git Bash):
-```bash
-netstat -ano | grep ":${SKILL_ENGINE_PORT:-19750} " | head -1 | awk '{print $5}' | xargs -r taskkill //F //PID
-```
-
-4. Verify it stopped:
+4. Verify with health check:
 
 ```bash
 curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 ```
 
-If the health check fails (connection refused), confirm: "Skill Engine server stopped."
+Confirm the `paused` field is `true`. Tell the user:
+
+> Skill Engine paused. Hooks will silently no-op until resumed with `/skill-engine:start`.

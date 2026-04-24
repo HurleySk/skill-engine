@@ -1,11 +1,11 @@
 ---
 name: start
-description: Start the skill-engine HTTP server or confirm it is already running. Shows server status.
+description: Start or resume the skill-engine HTTP server. Shows server status.
 ---
 
 # Skill Engine — Start
 
-Start the rule enforcement server or check if it's already running.
+Start or resume the rule enforcement server.
 
 ## Steps
 
@@ -15,7 +15,15 @@ Start the rule enforcement server or check if it's already running.
 curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 ```
 
-2. **If the health check succeeds**, show the user the status:
+2. **If running and paused** (`paused: true` in health response), resume it:
+
+```bash
+curl -s -X POST http://localhost:${SKILL_ENGINE_PORT:-19750}/resume
+```
+
+Re-check health and show status. Tell the user: "Skill Engine resumed."
+
+3. **If running and not paused**, show the user the status:
 
 > Skill Engine server is already running.
 > - Port: {port}
@@ -24,7 +32,7 @@ curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 > - Events processed: {eventsProcessed}
 > - Active sessions: {activeSessions}
 
-3. **If the health check fails** (connection refused), start the server:
+4. **If not running** (connection refused), start the server:
 
 ```bash
 PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/ 2>/dev/null | sort -V | tail -1)
@@ -33,6 +41,6 @@ bash "$PLUGIN_DIR/hooks/start-server.sh"
 
 Then re-check health and show status to confirm it started.
 
-4. If the server still doesn't start after the script runs, tell the user:
+5. If the server still doesn't start after the script runs, tell the user:
 
 > Server failed to start. Check that port ${SKILL_ENGINE_PORT:-19750} is free and Node.js is available.

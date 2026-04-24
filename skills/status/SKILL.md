@@ -1,6 +1,6 @@
 ---
 name: status
-description: Show skill-engine server diagnostics — port, uptime, rules loaded, events processed, active sessions.
+description: Show skill-engine server diagnostics — port, uptime, rules loaded, events processed, active sessions, paused state.
 ---
 
 # Skill Engine — Status
@@ -18,7 +18,7 @@ curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 2. **If running**, display:
 
 > **Skill Engine Server**
-> - Status: Running
+> - Status: Running (or "Paused" if `paused: true`)
 > - Port: {port}
 > - Uptime: {uptime}s
 > - Rules loaded: {rulesLoaded}
