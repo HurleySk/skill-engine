@@ -45,13 +45,12 @@ describe('validate', () => {
     assert.ok(result.error.includes('non-empty command'));
   });
 
-  it('rejects non-array matcher', () => {
+  it('accepts string matcher (pipe-separated format)', () => {
     const result = hookManager.validate('PreToolUse', {
       command: 'bash enforce.sh',
-      matcher: 'Edit'
+      matcher: 'Edit|Write'
     });
-    assert.equal(result.ok, false);
-    assert.ok(result.error.includes('array'));
+    assert.equal(result.ok, true);
   });
 });
 
@@ -79,7 +78,7 @@ describe('add', () => {
 
     const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.equal(data.hooks.PreToolUse.length, 1);
-    assert.equal(data.hooks.PreToolUse[0].command, 'bash enforce.sh');
+    assert.equal(data.hooks.PreToolUse[0].hooks[0].command, 'bash enforce.sh');
   });
 
   it('appends to existing hook array without clobbering', () => {
@@ -115,7 +114,7 @@ describe('add', () => {
     assert.equal(data.hooks.UserPromptSubmit.length, 1);
   });
 
-  it('detects duplicate command in same hook type', () => {
+  it('detects duplicate command in same hook type and matcher', () => {
     hookManager.add('PreToolUse', {
       command: 'bash enforce.sh',
       matcher: ['Edit']
@@ -123,7 +122,7 @@ describe('add', () => {
 
     const result = hookManager.add('PreToolUse', {
       command: 'bash enforce.sh',
-      matcher: ['Write']
+      matcher: ['Edit']
     }, settingsPath);
     assert.equal(result.ok, false);
     assert.ok(result.error.includes('duplicate'));
