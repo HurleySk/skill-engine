@@ -18,6 +18,10 @@ function argVal(name) {
 const PORT = parseInt(argVal('--port') || process.env.SKILL_ENGINE_PORT || '19750', 10);
 const RULES_DIR = argVal('--rules-dir') || null;
 
+// --- Response timing ---
+let totalResponseTimeNs = BigInt(0);
+let timedResponses = 0;
+
 // --- Priority helpers ---
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 function getPriority(rule, defaults) {
@@ -262,8 +266,12 @@ function respond(res, status, body) {
 async function handleRequest(req, res) {
   const url = req.url;
   const method = req.method;
+  const startNs = process.hrtime.bigint();
 
   if (method === 'GET' && url === '/health') {
+    const avgMs = timedResponses > 0
+      ? Number(totalResponseTimeNs / BigInt(timedResponses)) / 1e6
+      : 0;
     return respond(res, 200, {
       uptime: process.uptime(),
       rulesLoaded: compiledRules.length,
@@ -271,6 +279,7 @@ async function handleRequest(req, res) {
       lastEvent,
       eventsProcessed,
       activeSessions: sessions.size,
+      avgResponseTimeMs: Math.round(avgMs * 100) / 100,
     });
   }
 
@@ -279,7 +288,12 @@ async function handleRequest(req, res) {
       const body = await readBody(req);
       eventsProcessed++;
       lastEvent = 'activate';
-      return respond(res, 200, handleActivate(body));
+      const result = handleActivate(body);
+      const elapsed = process.hrtime.bigint() - startNs;
+      totalResponseTimeNs += elapsed;
+      timedResponses++;
+      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
+      return respond(res, 200, result);
     } catch {
       return respond(res, 400, { error: 'Invalid JSON' });
     }
@@ -290,7 +304,12 @@ async function handleRequest(req, res) {
       const body = await readBody(req);
       eventsProcessed++;
       lastEvent = 'enforce';
-      return respond(res, 200, handleEnforce(body));
+      const result = handleEnforce(body);
+      const elapsed = process.hrtime.bigint() - startNs;
+      totalResponseTimeNs += elapsed;
+      timedResponses++;
+      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
+      return respond(res, 200, result);
     } catch {
       return respond(res, 400, { error: 'Invalid JSON' });
     }
