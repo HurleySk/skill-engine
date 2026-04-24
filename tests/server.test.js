@@ -88,6 +88,20 @@ describe('Server Health', () => {
     const res = await request('GET', '/health');
     assert.equal(typeof res.body.avgResponseTimeMs, 'number');
   });
+
+  it('GET /health includes version from plugin.json', async () => {
+    const res = await request('GET', '/health');
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.body.version, 'string');
+    assert.ok(res.body.version.match(/^\d+\.\d+\.\d+$/), 'version should be semver');
+  });
+
+  it('GET /health includes pid as a number', async () => {
+    const res = await request('GET', '/health');
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.body.pid, 'number');
+    assert.ok(res.body.pid > 0, 'pid should be positive');
+  });
 });
 
 describe('Activate Endpoint', () => {
@@ -506,5 +520,105 @@ describe('Pause / Resume', () => {
     const hso = res.body.hookSpecificOutput;
     assert.ok(hso, 'should have hookSpecificOutput after resume');
     assert.ok(hso.additionalContext.includes('activate-rule'), 'additionalContext should include activate-rule');
+  });
+});
+
+describe('Tool Name Filtering', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  let testSqlFile;
+  const PORT = 19757;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-toolname-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'edit-only-rule': {
+          type: 'guardrail',
+          description: 'Only blocks Edit tool',
+          enforcement: 'block',
+          blockMessage: 'Edit only',
+          triggers: {
+            file: {
+              toolNames: ['Edit'],
+              pathPatterns: ['**/*.sql']
+            }
+          }
+        },
+        'any-tool-rule': {
+          type: 'guardrail',
+          description: 'Blocks any write tool',
+          enforcement: 'block',
+          blockMessage: 'Any tool blocked',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.config']
+            }
+          }
+        }
+      }
+    }));
+
+    testSqlFile = path.join(tmpDir, 'test.sql');
+    fs.writeFileSync(testSqlFile, 'SELECT 1');
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('blocks when tool_name matches rule toolNames', async () => {
+    const res = await request('POST', '/enforce', {
+      tool_name: 'Edit',
+      tool_input: { file_path: testSqlFile }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Edit only');
+  });
+
+  it('skips rule when tool_name does not match rule toolNames', async () => {
+    const res = await request('POST', '/enforce', {
+      tool_name: 'Write',
+      tool_input: { file_path: testSqlFile }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should not enforce for non-matching tool');
+  });
+
+  it('enforces rule without toolNames for any tool_name', async () => {
+    const configFile = path.join(tmpDir, 'app.config');
+    fs.writeFileSync(configFile, '<configuration />');
+    const res = await request('POST', '/enforce', {
+      tool_name: 'Write',
+      tool_input: { file_path: configFile }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('enforces rule without toolNames even when tool_name is absent', async () => {
+    const configFile = path.join(tmpDir, 'app.config');
+    fs.writeFileSync(configFile, '<configuration />');
+    const res = await request('POST', '/enforce', {
+      tool_input: { file_path: configFile }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
   });
 });

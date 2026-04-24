@@ -18,6 +18,13 @@ function argVal(name) {
 const PORT = parseInt(argVal('--port') || process.env.SKILL_ENGINE_PORT || '19750', 10);
 const RULES_DIR = argVal('--rules-dir') || null;
 
+// --- Version from plugin.json (read once at startup) ---
+const PLUGIN_JSON = path.resolve(__dirname, '..', '.claude-plugin', 'plugin.json');
+let SERVER_VERSION = 'unknown';
+try {
+  SERVER_VERSION = JSON.parse(fs.readFileSync(PLUGIN_JSON, 'utf8')).version || 'unknown';
+} catch {}
+
 // --- Response timing ---
 let totalResponseTimeNs = BigInt(0);
 let timedResponses = 0;
@@ -56,6 +63,9 @@ function compileRules(data) {
         try { acc.push(new RegExp(pat)); } catch {}
         return acc;
       }, []);
+      if (ft.toolNames && Array.isArray(ft.toolNames) && ft.toolNames.length) {
+        entry.toolNamesSet = new Set(ft.toolNames);
+      }
     }
     compiled.push(entry);
   }
@@ -203,6 +213,7 @@ function handleEnforce(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const filePath = input && input.tool_input && input.tool_input.file_path;
   if (!filePath) return {};
+  const toolName = input && input.tool_name;
 
   const session = getSession(input.session_id);
   const matches = [];
@@ -213,6 +224,7 @@ function handleEnforce(input) {
     if (enforcement !== 'block' && enforcement !== 'warn') continue;
     if (!entry.pathRe || !entry.pathRe.length) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
+    if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) continue;
     if (!matchFileCompiled(filePath, entry)) continue;
     const priority = getPriority(entry.rule, rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
@@ -295,6 +307,8 @@ async function handleRequest(req, res) {
       ? Number(totalResponseTimeNs / BigInt(timedResponses)) / 1e6
       : 0;
     return respond(res, 200, {
+      version: SERVER_VERSION,
+      pid: process.pid,
       uptime: process.uptime(),
       rulesLoaded: compiledRules.length,
       port: PORT,
