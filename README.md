@@ -1,68 +1,66 @@
 # Skill Engine
 
-Lesson capture and skill scaffolding for Claude Code projects.
+Rule-based skill activation and guardrail enforcement for Claude Code, powered by a persistent HTTP server for near-zero latency.
 
-## v2.0.0 — Breaking Change
+## How It Works
 
-**Hook-based activation and enforcement have been removed.**
+A Node.js HTTP server starts at session begin, loads all rules into memory, and pre-compiles regex patterns. Two HTTP hooks in `plugin.json` route Claude Code events to the server:
 
-### Why
+- **UserPromptSubmit** hits `/activate` -- matches prompt text against activation rules and suggests relevant skills.
+- **PreToolUse** hits `/enforce` -- evaluates guardrail rules against the tool call and warns or blocks.
 
-Every Claude Code hook spawns a new process on each invocation. On Windows (Git Bash), each process spawn costs ~0.2-0.5s. Skill Engine v1 registered two hooks (activate on UserPromptSubmit, enforce on PreToolUse), which added ~0.5-0.7s of latency to every prompt submission and every tool call. This overhead scales linearly with the number of hooks and is unacceptable for interactive use.
-
-Claude Code's built-in skill activation (prompt-matching in CLAUDE.md and plugin skill descriptions) handles the suggestion use case without process spawns. Guardrail enforcement is better done in project-specific hooks that only fire when needed, rather than a generic engine that runs on every action.
-
-### What Remains
-
-| Skill | Purpose | Status |
-|---|---|---|
-| `/skill-engine:learn-skill` | Capture a multi-step workflow as a reusable SKILL.md file | **Active** |
-| `/skill-engine:learn` | Triage router — classifies a lesson and routes to the right sub-skill | **Active** |
-| `/skill-engine:learn-rule` | Capture a lesson as an activation rule | **Deprecated** — feeds the removed hook system |
-| `/skill-engine:learn-hook` | Capture a lesson as a Claude Code hook entry | **Deprecated** — feeds the removed hook system |
-| `/skill-engine:setup` | Install hooks and scaffold rules | **Deprecated** — hooks removed |
-| `/skill-engine:rules` | Add, list, and test activation rules | **Deprecated** — hooks removed |
-
-### What Was Removed
-
-- `hooks/activate.sh` and `hooks/enforce.sh` are no longer registered in the plugin config. The scripts remain on disk for reference but are not executed.
-- `hooks/lib/engine.js` (the activation/enforcement engine) is no longer invoked by any hook.
-- `skill-rules.json` is no longer read at runtime. Existing rule files are inert.
+HTTP hooks cost ~6-21ms per event. The v1 command hooks spawned a new process each time, costing ~250-450ms. The server approach keeps enforcement on the hot path without the latency penalty.
 
 ## Skills
 
-### learn-skill (active)
+| Skill | Command | Purpose |
+|---|---|---|
+| learn | `/skill-engine:learn` | Capture a lesson as a rule or skill (triage router) |
+| learn-rule | `/skill-engine:learn-rule` | Create, update, or promote enforcement rules |
+| learn-skill | `/skill-engine:learn-skill` | Create SKILL.md workflow files |
+| start | `/skill-engine:start` | Start the server or check if it is already running |
+| stop | `/skill-engine:stop` | Stop the server |
+| status | `/skill-engine:status` | Show server diagnostics (port, uptime, rules, events) |
+| perf-check | `/skill-engine:perf-check` | Dispatch a performance audit subagent |
 
-Capture a multi-step workflow or process as a reusable SKILL.md file. Scaffolds project-local skills in `.claude/skills/`.
+## Server Lifecycle
 
-```
-/skill-engine:learn-skill
-```
+The server auto-starts via the `SessionStart` hook -- no manual setup needed.
 
-### learn (active)
+Manual control:
 
-Triage router that classifies a lesson learned and routes to the appropriate sub-skill (rule, hook, or skill).
+- `/skill-engine:start` -- start or confirm running
+- `/skill-engine:stop` -- stop the server (hooks silently no-op until restarted)
+- `/skill-engine:status` -- show diagnostics
 
-```
-/skill-engine:learn
-```
+Kill switch: set `SKILL_ENGINE_OFF=1` to prevent the server from starting.
+
+## Port Configuration
+
+Default port is **19750**, configurable via `SKILL_ENGINE_PORT` env var for the server and start script.
+
+**Limitation:** The HTTP hook URLs in `plugin.json` are hardcoded to `http://localhost:19750`. The plugin.json format does not support env var interpolation in URLs. If you change the port via `SKILL_ENGINE_PORT`, the hooks will not reach the server. Only change the port if you also fork the plugin and update `plugin.json` to match.
+
+## Rule Files
+
+- **skill-rules.json** -- Permanent, version-controlled rules. Ship these with your project.
+- **learned-rules.json** -- Auto-generated rules created via `/skill-engine:learn-rule`. Promote to `skill-rules.json` when stable.
+
+Both files use the same schema. See `skills/learn-rule/SKILL.md` for the rule structure.
 
 ## Requirements
 
-- **Node.js** (any recent version) — used by learn-skill for scaffolding
-- **jq** — used by hook-helpers.sh (only needed if referencing the library from other hooks)
-- Claude Code with skills support
+- Node.js (any recent version)
+- Claude Code with plugin and hook support
 - Bash (Git Bash on Windows)
 
-## Migration from v1
+## Version History
 
-If you previously installed skill-engine v1.x, you may have hook entries in your project's `.claude/settings.json` referencing `activate.sh` and `enforce.sh`. To clean up:
-
-1. Open `.claude/settings.json` (or `settings.local.json`)
-2. Find and remove any hook entries whose `command` references `skill-engine/hooks/activate.sh` or `skill-engine/hooks/enforce.sh`
-3. The `skill-rules.json` file in your project can be deleted or kept for reference — it is no longer read at runtime
-
-Alternatively, run `/skill-engine:setup` which will detect the v2 state and offer to remove stale hook entries.
+| Version | Architecture |
+|---|---|
+| **v3.0.0** | HTTP server-based enforcement (current) |
+| v2.0.0 | Hooks removed entirely for performance |
+| v1.x | Command hook-based enforcement |
 
 ## License
 
