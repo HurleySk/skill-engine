@@ -10,8 +10,24 @@ fi
 PORT="${SKILL_ENGINE_PORT:-19750}"
 
 # Check if server is already running
-if curl -s --max-time 1 "http://localhost:$PORT/health" > /dev/null 2>&1; then
-  exit 0
+HEALTH=$(curl -s --max-time 1 "http://localhost:$PORT/health" 2>/dev/null)
+if [ -n "$HEALTH" ]; then
+  # Server is running — check if version matches
+  RUNNING_VERSION=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version||'')}catch{console.log('')}})" 2>/dev/null)
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$SCRIPT_DIR/../.claude-plugin/plugin.json','utf8')).version||'')}catch{console.log('')}" 2>/dev/null)
+
+  if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" = "$CURRENT_VERSION" ]; then
+    exit 0
+  fi
+
+  # Version mismatch — kill old server and start fresh
+  OLD_PID=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).pid||'')}catch{console.log('')}})" 2>/dev/null)
+  if [ -n "$OLD_PID" ]; then
+    kill "$OLD_PID" 2>/dev/null
+    sleep 1
+  fi
+  echo "skill-engine: restarted ($RUNNING_VERSION → $CURRENT_VERSION)"
 fi
 
 # Resolve plugin directory

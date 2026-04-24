@@ -40,6 +40,7 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "http",
