@@ -403,3 +403,108 @@ describe('Kill Switch', () => {
     assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput');
   });
 });
+
+describe('Pause / Resume', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  let testSqlFile;
+  const PORT = 19756;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-pauseresume-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'block-rule': {
+          type: 'guardrail',
+          description: 'Block SQL files',
+          enforcement: 'block',
+          blockMessage: 'SQL blocked',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.sql']
+            }
+          }
+        },
+        'activate-rule': {
+          type: 'domain',
+          description: 'Activate test rule',
+          triggers: { prompt: { keywords: ['activate-test'] } }
+        }
+      }
+    }));
+
+    testSqlFile = path.join(tmpDir, 'test.sql');
+    fs.writeFileSync(testSqlFile, 'SELECT 1');
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('POST /pause returns {paused: true} with status 200', async () => {
+    const res = await request('POST', '/pause', null, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.paused, true);
+  });
+
+  it('GET /health shows paused: true after pause', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.paused, true);
+  });
+
+  it('POST /enforce returns {} (no hookSpecificOutput) when paused', async () => {
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput when paused');
+  });
+
+  it('POST /activate returns {} (no hookSpecificOutput) when paused', async () => {
+    const res = await request('POST', '/activate', { prompt: 'activate-test keyword' }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput when paused');
+  });
+
+  it('POST /resume returns {paused: false} with status 200', async () => {
+    const res = await request('POST', '/resume', null, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.paused, false);
+  });
+
+  it('GET /health shows paused: false after resume', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.paused, false);
+  });
+
+  it('POST /enforce blocks again after resume', async () => {
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.ok(hso, 'should have hookSpecificOutput after resume');
+    assert.equal(hso.permissionDecision, 'deny');
+  });
+
+  it('POST /activate matches again after resume', async () => {
+    const res = await request('POST', '/activate', { prompt: 'activate-test keyword' }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.ok(hso, 'should have hookSpecificOutput after resume');
+    assert.ok(hso.additionalContext.includes('activate-rule'), 'additionalContext should include activate-rule');
+  });
+});

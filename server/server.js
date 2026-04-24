@@ -149,7 +149,7 @@ function matchFileCompiled(filePath, entry) {
 
 // --- Activate handler ---
 function handleActivate(input) {
-  if (process.env.SKILL_ENGINE_OFF === '1') return {};
+  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const prompt = input && input.prompt;
   if (!prompt) return {};
 
@@ -200,7 +200,7 @@ function handleActivate(input) {
 
 // --- Enforce handler ---
 function handleEnforce(input) {
-  if (process.env.SKILL_ENGINE_OFF === '1') return {};
+  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const filePath = input && input.tool_input && input.tool_input.file_path;
   if (!filePath) return {};
 
@@ -257,6 +257,7 @@ function handleEnforce(input) {
 // --- Stats ---
 let eventsProcessed = 0;
 let lastEvent = null;
+let paused = false;
 
 // --- Request router ---
 function readBody(req) {
@@ -301,6 +302,7 @@ async function handleRequest(req, res) {
       eventsProcessed,
       activeSessions: sessions.size,
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
+      paused,
     });
   }
 
@@ -341,6 +343,16 @@ async function handleRequest(req, res) {
     eventsProcessed++;
     lastEvent = 'reload';
     return respond(res, 200, { reloaded: true, rulesLoaded: count });
+  }
+
+  if (method === 'POST' && url === '/pause') {
+    paused = true;
+    return respond(res, 200, { paused: true });
+  }
+
+  if (method === 'POST' && url === '/resume') {
+    paused = false;
+    return respond(res, 200, { paused: false });
   }
 
   respond(res, 404, { error: 'Not found' });
