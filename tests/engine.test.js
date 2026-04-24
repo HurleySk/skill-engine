@@ -212,21 +212,10 @@ describe('Skip Conditions', () => {
     assert.equal(engine.checkSkip('sql-standards', rule, null, null), false);
   });
 
-  it('checkSkip returns true when file contains marker', () => {
+  it('checkSkip ignores fileMarkers (removed in v3)', () => {
     const skipFile = path.join(fixturesDir, 'sample-skip.sql');
     const rule = { skipConditions: { fileMarkers: ['-- @skip-sql-standards'] } };
-    assert.equal(engine.checkSkip('sql-standards', rule, null, skipFile), true);
-  });
-
-  it('checkSkip returns false when file does not contain marker', () => {
-    const sqlFile = path.join(fixturesDir, 'sample.sql');
-    const rule = { skipConditions: { fileMarkers: ['-- @skip-sql-standards'] } };
-    assert.equal(engine.checkSkip('sql-standards', rule, null, sqlFile), false);
-  });
-
-  it('checkSkip returns false for non-existent file with markers', () => {
-    const rule = { skipConditions: { fileMarkers: ['-- @skip-sql-standards'] } };
-    assert.equal(engine.checkSkip('sql-standards', rule, null, '/nonexistent.sql'), false);
+    assert.equal(engine.checkSkip('sql-standards', rule, null, skipFile), false);
   });
 
   it('session state read returns empty state for new session', () => {
@@ -352,7 +341,7 @@ describe('Enforce', () => {
     assert.equal(result.stderr, undefined);
   });
 
-  it('enforce skips rule when file has skip marker', () => {
+  it('enforce does not skip rule for file markers (removed in v3)', () => {
     const rulesData = engine.loadRules(path.join(fixturesDir, 'valid-rules.json'));
     const input = {
       tool_name: 'Edit',
@@ -360,7 +349,7 @@ describe('Enforce', () => {
       session_id: 'enforce-test-4'
     };
     const result = engine.enforce(input, rulesData);
-    assert.equal(result.exit, 0, 'skip marker should prevent block');
+    assert.equal(result.exit, 2, 'file markers no longer skip — block should fire');
   });
 
   it('enforce skips rule when env var is set', () => {

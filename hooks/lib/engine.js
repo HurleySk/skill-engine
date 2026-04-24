@@ -117,13 +117,6 @@ function checkSkip(ruleName, rule, sessionId, filePath) {
     if (skip.envVars.some(v => process.env[v])) return true;
   }
 
-  if (filePath && skip.fileMarkers && skip.fileMarkers.length) {
-    try {
-      const lines = fs.readFileSync(filePath, 'utf8').split('\n').slice(0, 5).join('\n');
-      if (skip.fileMarkers.some(marker => lines.includes(marker))) return true;
-    } catch {}
-  }
-
   if (skip.sessionOnce && sessionId) {
     const state = readSessionState(sessionId);
     if (state.firedRules.includes(ruleName)) return true;

@@ -24,7 +24,6 @@
       },
       "blockMessage": "SQL standards apply. Read .claude/skills/sql-standards/SKILL.md first.",
       "skipConditions": {
-        "fileMarkers": ["-- @skip-sql-standards"],
         "envVars": ["SKIP_SQL_STANDARDS"],
         "sessionOnce": false
       }
