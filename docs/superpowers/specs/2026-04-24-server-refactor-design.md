@@ -47,7 +47,7 @@ Replace the process-kill stop mechanism with an in-process pause mode. When paus
 - `GET /health` — add `paused` boolean field to response
 - `handleActivate` / `handleEnforce` — early return `{}` when paused
 
-**Replaces `SKILL_ENGINE_OFF` env var:** The pause mechanism supersedes the env var check. The env var is removed from both handlers. `start-server.sh` retains the env var check as a "don't even start the server" gate, which is a different concern.
+**`SKILL_ENGINE_OFF` env var retained:** The pause mechanism is the primary way to disable enforcement at runtime. The `SKILL_ENGINE_OFF` env var check is kept in both handlers as a defense-in-depth measure for backward compatibility. `start-server.sh` also checks the env var as a "don't even start the server" gate.
 
 **Skill updates:**
 - **stop skill** — POST to `/pause` instead of killing the process. Verify with health check showing `paused: true`. If server is already down (ECONNREFUSED), report "not running" as today.
@@ -75,7 +75,7 @@ Replace the process-kill stop mechanism with an in-process pause mode. When paus
 | `hooks/lib/engine.js` | Delete |
 | `hooks/lib/rules-io.js` | Create (extracted from engine.js) |
 | `hooks/lib/learn.js` | Update imports |
-| `server/server.js` | Update imports, add pause/resume/health changes, remove SKILL_ENGINE_OFF from handlers |
+| `server/server.js` | Update imports, add pause/resume/health changes, add paused check alongside SKILL_ENGINE_OFF |
 | `tests/engine.test.js` | Delete |
 | `tests/rules-io.test.js` | Create (subset of engine tests) |
 | `tests/server.test.js` | Add pause/resume tests |
