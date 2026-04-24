@@ -56,20 +56,23 @@ Registered in `plugin.json`:
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/start-server.sh\""
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/start-server.sh\"" }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "type": "http",
-        "url": "http://localhost:19750/activate"
+        "hooks": [
+          { "type": "http", "url": "http://localhost:19750/activate" }
+        ]
       }
     ],
     "PreToolUse": [
       {
-        "type": "http",
-        "url": "http://localhost:19750/enforce"
+        "hooks": [
+          { "type": "http", "url": "http://localhost:19750/enforce" }
+        ]
       }
     ]
   }
