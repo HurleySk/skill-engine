@@ -4,10 +4,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// --- Shared utilities from engine.js / glob-match.js ---
+// --- Shared utilities from rules-io.js / glob-match.js ---
 const libDir = path.resolve(__dirname, '..', 'hooks', 'lib');
 const { normalizePath, globToRegex, matchPath } = require(path.join(libDir, 'glob-match'));
-const { loadRules, findRulesFile, findLearnedRulesFile } = require(path.join(libDir, 'engine'));
+const { loadRules, findRulesFile, findLearnedRulesFile } = require(path.join(libDir, 'rules-io'));
 
 // --- CLI args ---
 const args = process.argv.slice(2);
