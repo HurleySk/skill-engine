@@ -137,29 +137,32 @@ describe('Activate Endpoint', () => {
   it('returns skill suggestions for matching prompt', async () => {
     const res = await request('POST', '/activate', { prompt: 'check the test-keyword here' }, PORT);
     assert.equal(res.status, 200);
-    assert.ok(res.body.result.includes('test-rule'), 'result should include test-rule');
-    assert.ok(res.body.result.includes('Skill Engine'), 'result should include Skill Engine header');
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('test-rule'), 'additionalContext should include test-rule');
+    assert.ok(ctx.includes('Skill Engine'), 'additionalContext should include Skill Engine header');
+    assert.equal(res.body.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
   });
 
   it('returns empty result for non-matching prompt', async () => {
     const res = await request('POST', '/activate', { prompt: 'nothing relevant' }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.result, '');
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput');
   });
 
   it('respects sessionOnce — first call includes rule, second does not', async () => {
     const body = { prompt: 'check the test-keyword', session_id: 'sess-once-test' };
     const first = await request('POST', '/activate', body, PORT);
-    assert.ok(first.body.result.includes('test-rule'), 'first call should include test-rule');
+    assert.ok(first.body.hookSpecificOutput.additionalContext.includes('test-rule'), 'first call should include test-rule');
     const second = await request('POST', '/activate', body, PORT);
-    assert.ok(!second.body.result.includes('test-rule'), 'second call should not include test-rule');
+    assert.ok(!second.body.hookSpecificOutput, 'second call should not include test-rule');
   });
 
   it('sorts by priority — HIGH appears before MEDIUM', async () => {
     const res = await request('POST', '/activate', { prompt: 'test-keyword and high-keyword together' }, PORT);
     assert.equal(res.status, 200);
-    const highIdx = res.body.result.indexOf('[HIGH]');
-    const medIdx = res.body.result.indexOf('[MEDIUM]');
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    const highIdx = ctx.indexOf('[HIGH]');
+    const medIdx = ctx.indexOf('[MEDIUM]');
     assert.ok(highIdx !== -1, 'should contain HIGH priority');
     assert.ok(medIdx !== -1, 'should contain MEDIUM priority');
     assert.ok(highIdx < medIdx, 'HIGH should appear before MEDIUM');
@@ -230,11 +233,13 @@ describe('Enforce Endpoint', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns block for matching guardrail with content pattern', async () => {
+  it('returns deny for matching guardrail with content pattern', async () => {
     const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.decision, 'block');
-    assert.equal(res.body.reason, 'SQL blocked');
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.hookEventName, 'PreToolUse');
+    assert.equal(hso.permissionDecision, 'deny');
+    assert.equal(hso.permissionDecisionReason, 'SQL blocked');
   });
 
   it('returns warn for matching warn guardrail', async () => {
@@ -242,23 +247,25 @@ describe('Enforce Endpoint', () => {
     fs.writeFileSync(configFile, '<configuration />');
     const res = await request('POST', '/enforce', { tool_input: { file_path: configFile } }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.decision, 'allow');
-    assert.ok(res.body.stderr.includes('warn-config'), 'stderr should mention warn-config');
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.hookEventName, 'PreToolUse');
+    assert.equal(hso.permissionDecision, 'allow');
+    assert.ok(res.body.systemMessage.includes('warn-config'), 'systemMessage should mention warn-config');
   });
 
-  it('returns allow for non-matching file', async () => {
+  it('returns empty for non-matching file', async () => {
     const txtFile = path.join(tmpDir, 'readme.txt');
     fs.writeFileSync(txtFile, 'hello');
     const res = await request('POST', '/enforce', { tool_input: { file_path: txtFile } }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.decision, 'allow');
-    assert.ok(!res.body.stderr, 'should have no stderr');
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput');
+    assert.ok(!res.body.systemMessage, 'should have no systemMessage');
   });
 
-  it('returns allow when file_path is missing', async () => {
+  it('returns empty when file_path is missing', async () => {
     const res = await request('POST', '/enforce', { tool_input: {} }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.decision, 'allow');
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput');
   });
 });
 
@@ -303,7 +310,7 @@ describe('Reload Endpoint', () => {
   it('POST /reload picks up new rules', async () => {
     // 1. Verify old rule matches
     const before = await request('POST', '/activate', { prompt: 'old keyword here' }, PORT);
-    assert.ok(before.body.result.includes('old-rule'), 'old-rule should match before reload');
+    assert.ok(before.body.hookSpecificOutput.additionalContext.includes('old-rule'), 'old-rule should match before reload');
 
     // 2. Overwrite rules file with new rule
     fs.writeFileSync(rulesFile, JSON.stringify({
@@ -326,11 +333,11 @@ describe('Reload Endpoint', () => {
 
     // 4. Verify old rule no longer matches
     const oldCheck = await request('POST', '/activate', { prompt: 'old keyword here' }, PORT);
-    assert.equal(oldCheck.body.result, '', 'old-rule should not match after reload');
+    assert.ok(!oldCheck.body.hookSpecificOutput, 'old-rule should not match after reload');
 
     // 5. Verify new rule matches
     const newCheck = await request('POST', '/activate', { prompt: 'new keyword here' }, PORT);
-    assert.ok(newCheck.body.result.includes('new-rule'), 'new-rule should match after reload');
+    assert.ok(newCheck.body.hookSpecificOutput.additionalContext.includes('new-rule'), 'new-rule should match after reload');
   });
 });
 
@@ -387,12 +394,12 @@ describe('Kill Switch', () => {
   it('activate returns empty when SKILL_ENGINE_OFF=1', async () => {
     const res = await request('POST', '/activate', { prompt: 'anything matching block-rule' }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.result, '');
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput');
   });
 
-  it('enforce returns allow when SKILL_ENGINE_OFF=1', async () => {
+  it('enforce returns empty when SKILL_ENGINE_OFF=1', async () => {
     const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.decision, 'allow');
+    assert.ok(!res.body.hookSpecificOutput, 'should have no hookSpecificOutput');
   });
 });

@@ -149,9 +149,9 @@ function matchFileCompiled(filePath, entry) {
 
 // --- Activate handler ---
 function handleActivate(input) {
-  if (process.env.SKILL_ENGINE_OFF === '1') return { result: '' };
+  if (process.env.SKILL_ENGINE_OFF === '1') return {};
   const prompt = input && input.prompt;
-  if (!prompt) return { result: '' };
+  if (!prompt) return {};
 
   const session = getSession(input.session_id);
   const matches = [];
@@ -165,7 +165,7 @@ function handleActivate(input) {
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
   }
 
-  if (!matches.length) return { result: '' };
+  if (!matches.length) return {};
 
   matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
 
@@ -190,14 +190,19 @@ function handleActivate(input) {
     if (m.rule.skillPath) lines.push('  \u2192 Read: ' + m.rule.skillPath);
     lines.push('');
   }
-  return { result: lines.join('\n') };
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: lines.join('\n')
+    }
+  };
 }
 
 // --- Enforce handler ---
 function handleEnforce(input) {
-  if (process.env.SKILL_ENGINE_OFF === '1') return { decision: 'allow' };
+  if (process.env.SKILL_ENGINE_OFF === '1') return {};
   const filePath = input && input.tool_input && input.tool_input.file_path;
-  if (!filePath) return { decision: 'allow' };
+  if (!filePath) return {};
 
   const session = getSession(input.session_id);
   const matches = [];
@@ -213,7 +218,7 @@ function handleEnforce(input) {
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
   }
 
-  if (!matches.length) return { decision: 'allow' };
+  if (!matches.length) return {};
 
   matches.sort((a, b) => {
     if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
@@ -224,14 +229,29 @@ function handleEnforce(input) {
   const blockMatch = matches.find(m => m.enforcement === 'block');
   if (blockMatch) {
     const reason = blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name);
-    return { decision: 'block', reason };
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason
+      }
+    };
   }
 
   const warnings = matches
     .filter(m => m.enforcement === 'warn')
     .map(m => '\u26A0\uFE0F ' + m.name + ': ' + m.rule.description);
   const joined = warnings.join('\n');
-  return { decision: 'allow', stderr: joined || undefined };
+  if (joined) {
+    return {
+      systemMessage: joined,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow'
+      }
+    };
+  }
+  return {};
 }
 
 // --- Stats ---
