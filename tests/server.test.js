@@ -66,3 +66,169 @@ describe('Server Health', () => {
     assert.equal(typeof res.body.port, 'number');
   });
 });
+
+describe('Activate Endpoint', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19752;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-activate-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'test-rule': {
+          type: 'domain',
+          description: 'Test rule',
+          skillPath: './test/SKILL.md',
+          triggers: { prompt: { keywords: ['test-keyword'] } },
+          skipConditions: { sessionOnce: true }
+        },
+        'high-rule': {
+          type: 'domain',
+          description: 'High priority rule',
+          priority: 'high',
+          triggers: { prompt: { keywords: ['high-keyword'] } }
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns skill suggestions for matching prompt', async () => {
+    const res = await request('POST', '/activate', { prompt: 'check the test-keyword here' }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.result.includes('test-rule'), 'result should include test-rule');
+    assert.ok(res.body.result.includes('Skill Engine'), 'result should include Skill Engine header');
+  });
+
+  it('returns empty result for non-matching prompt', async () => {
+    const res = await request('POST', '/activate', { prompt: 'nothing relevant' }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.result, '');
+  });
+
+  it('respects sessionOnce — first call includes rule, second does not', async () => {
+    const body = { prompt: 'check the test-keyword', session_id: 'sess-once-test' };
+    const first = await request('POST', '/activate', body, PORT);
+    assert.ok(first.body.result.includes('test-rule'), 'first call should include test-rule');
+    const second = await request('POST', '/activate', body, PORT);
+    assert.ok(!second.body.result.includes('test-rule'), 'second call should not include test-rule');
+  });
+
+  it('sorts by priority — HIGH appears before MEDIUM', async () => {
+    const res = await request('POST', '/activate', { prompt: 'test-keyword and high-keyword together' }, PORT);
+    assert.equal(res.status, 200);
+    const highIdx = res.body.result.indexOf('[HIGH]');
+    const medIdx = res.body.result.indexOf('[MEDIUM]');
+    assert.ok(highIdx !== -1, 'should contain HIGH priority');
+    assert.ok(medIdx !== -1, 'should contain MEDIUM priority');
+    assert.ok(highIdx < medIdx, 'HIGH should appear before MEDIUM');
+  });
+});
+
+describe('Enforce Endpoint', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  let testSqlFile;
+  const PORT = 19753;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-enforce-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'block-sql': {
+          type: 'guardrail',
+          description: 'Block SQL procedures',
+          enforcement: 'block',
+          blockMessage: 'SQL blocked',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.sql'],
+              contentPatterns: ['CREATE\\s+PROC']
+            }
+          }
+        },
+        'warn-config': {
+          type: 'guardrail',
+          description: 'Warn on config files',
+          enforcement: 'warn',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.config']
+            }
+          }
+        }
+      }
+    }));
+
+    testSqlFile = path.join(tmpDir, 'test.sql');
+    fs.writeFileSync(testSqlFile, 'CREATE PROCEDURE [dbo].[Test]\nAS\nBEGIN\n  SELECT 1\nEND');
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns block for matching guardrail with content pattern', async () => {
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.decision, 'block');
+    assert.equal(res.body.reason, 'SQL blocked');
+  });
+
+  it('returns warn for matching warn guardrail', async () => {
+    const configFile = path.join(tmpDir, 'app.config');
+    fs.writeFileSync(configFile, '<configuration />');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: configFile } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.decision, 'allow');
+    assert.ok(res.body.stderr.includes('warn-config'), 'stderr should mention warn-config');
+  });
+
+  it('returns allow for non-matching file', async () => {
+    const txtFile = path.join(tmpDir, 'readme.txt');
+    fs.writeFileSync(txtFile, 'hello');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: txtFile } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.decision, 'allow');
+    assert.ok(!res.body.stderr, 'should have no stderr');
+  });
+
+  it('returns allow when file_path is missing', async () => {
+    const res = await request('POST', '/enforce', { tool_input: {} }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.decision, 'allow');
+  });
+});
