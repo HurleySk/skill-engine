@@ -23,7 +23,8 @@ if [ ! -f "$SERVER_JS" ]; then
 fi
 
 # Start server in background, detached from this process
-nohup node "$SERVER_JS" --port "$PORT" > /dev/null 2>&1 &
+RULES_DIR="${CLAUDE_PROJECT_DIR:+$CLAUDE_PROJECT_DIR/.claude/skills}"
+nohup node "$SERVER_JS" --port "$PORT" ${RULES_DIR:+--rules-dir "$RULES_DIR"} > /dev/null 2>&1 &
 disown
 
 # Wait briefly for server to come up (max 3 seconds)
