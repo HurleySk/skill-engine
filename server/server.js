@@ -230,7 +230,8 @@ function handleEnforce(input) {
   const warnings = matches
     .filter(m => m.enforcement === 'warn')
     .map(m => '\u26A0\uFE0F ' + m.name + ': ' + m.rule.description);
-  return { decision: 'allow', stderr: warnings.join('\n') };
+  const joined = warnings.join('\n');
+  return { decision: 'allow', stderr: joined || undefined };
 }
 
 // --- Stats ---
