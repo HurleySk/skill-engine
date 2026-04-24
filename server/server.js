@@ -224,6 +224,7 @@ function handleEnforce(input) {
     if (enforcement !== 'block' && enforcement !== 'warn') continue;
     if (!entry.pathRe || !entry.pathRe.length) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
+    // Fail-open: if toolName is absent, still evaluate the rule (over-enforce > under-enforce for guardrails)
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) continue;
     if (!matchFileCompiled(filePath, entry)) continue;
     const priority = getPriority(entry.rule, rulesData.defaults);
