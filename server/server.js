@@ -237,7 +237,13 @@ let lastEvent = null;
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', chunk => { data += chunk; });
+    let size = 0;
+    const MAX = 1024 * 1024; // 1MB
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX) { req.destroy(); reject(new Error('Body too large')); return; }
+      data += chunk;
+    });
     req.on('end', () => {
       if (!data) return resolve(null);
       try { resolve(JSON.parse(data)); }
