@@ -56,10 +56,14 @@ Both files use the same schema. See `skills/learn-rule/SKILL.md` for the rule st
 
 ## Version History
 
-| Version | Architecture |
+| Version | Changes |
 |---|---|
-| **v3.0.0** | HTTP server-based enforcement (current) |
-| v2.0.0 | Hooks removed entirely for performance |
+| **v3.0.10** | Fix rules not loading when CLAUDE_PROJECT_DIR is unset |
+| v3.0.9 | Fix Windows process kill in start-server.sh |
+| v3.0.7 | Fix false-positive enforcement on read-only tools; version-aware restart |
+| v3.0.6 | Pause/resume endpoints; hook schema fix |
+| v3.0.0 | HTTP server-based enforcement |
+| v2.0.0 | Hooks removed for performance |
 | v1.x | Command hook-based enforcement |
 
 ## License
