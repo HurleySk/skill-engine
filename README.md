@@ -58,7 +58,7 @@ Both files use the same schema. See `skills/learn-rule/SKILL.md` for the rule st
 
 | Version | Changes |
 |---|---|
-| **v3.0.10** | Fix rules not loading when CLAUDE_PROJECT_DIR is unset |
+| **v3.1.0** | Fix rules not loading when CLAUDE_PROJECT_DIR is unset; add CLAUDE.md |
 | v3.0.9 | Fix Windows process kill in start-server.sh |
 | v3.0.7 | Fix false-positive enforcement on read-only tools; version-aware restart |
 | v3.0.6 | Pause/resume endpoints; hook schema fix |
