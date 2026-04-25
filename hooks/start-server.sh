@@ -18,6 +18,11 @@ if [ -n "$HEALTH" ]; then
   CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$SCRIPT_DIR/../.claude-plugin/plugin.json','utf8')).version||'')}catch{console.log('')}" 2>/dev/null)
 
   if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" = "$CURRENT_VERSION" ]; then
+    PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+    RULES_DIR="$PROJECT_DIR/.claude/skills"
+    curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
+      -d "{\"rulesDir\":\"$RULES_DIR\"}" \
+      "http://localhost:$PORT/reload" > /dev/null 2>&1
     exit 0
   fi
 
