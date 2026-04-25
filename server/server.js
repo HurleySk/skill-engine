@@ -16,7 +16,7 @@ function argVal(name) {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
 }
 const PORT = parseInt(argVal('--port') || process.env.SKILL_ENGINE_PORT || '19750', 10);
-const RULES_DIR = argVal('--rules-dir') || null;
+let RULES_DIR = argVal('--rules-dir') || null;
 
 // --- Version from plugin.json (read once at startup) ---
 const PLUGIN_JSON = path.resolve(__dirname, '..', '.claude-plugin', 'plugin.json');
@@ -318,6 +318,7 @@ async function handleRequest(req, res) {
       activeSessions: sessions.size,
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
+      rulesDir: RULES_DIR || null,
     });
   }
 
@@ -354,10 +355,17 @@ async function handleRequest(req, res) {
   }
 
   if (method === 'POST' && url === '/reload') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (body && body.rulesDir) {
+      RULES_DIR = body.rulesDir;
+    }
     const count = loadAndCompile();
+    closeWatchers();
+    activeWatchers = watchRuleFiles();
     eventsProcessed++;
     lastEvent = 'reload';
-    return respond(res, 200, { reloaded: true, rulesLoaded: count });
+    return respond(res, 200, { reloaded: true, rulesLoaded: count, rulesDir: RULES_DIR || null });
   }
 
   if (method === 'POST' && url === '/pause') {
@@ -374,6 +382,11 @@ async function handleRequest(req, res) {
 }
 
 // --- File watching for hot-reload ---
+let activeWatchers = [];
+function closeWatchers() {
+  for (const w of activeWatchers) { try { w.close(); } catch {} }
+  activeWatchers = [];
+}
 function watchRuleFiles() {
   const files = [];
   if (RULES_DIR) {
@@ -416,7 +429,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   process.stdout.write('skill-engine server listening on port ' + PORT + '\n');
-  watchRuleFiles();
+  activeWatchers = watchRuleFiles();
 });
 
 // Graceful shutdown

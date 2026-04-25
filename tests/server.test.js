@@ -355,6 +355,85 @@ describe('Reload Endpoint', () => {
   });
 });
 
+describe('Reload with rulesDir', () => {
+  let serverProcess;
+  let tmpDirA;
+  let tmpDirB;
+  let rulesDirA;
+  let rulesDirB;
+  const PORT = 19758;
+
+  before(async () => {
+    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-reload-a-'));
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-reload-b-'));
+    rulesDirA = path.join(tmpDirA, '.claude', 'skills');
+    rulesDirB = path.join(tmpDirB, '.claude', 'skills');
+    fs.mkdirSync(rulesDirA, { recursive: true });
+    fs.mkdirSync(rulesDirB, { recursive: true });
+    fs.writeFileSync(path.join(rulesDirA, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-a': { type: 'domain', description: 'Rule A', triggers: { prompt: { keywords: ['alpha'] } } } }
+    }));
+    fs.writeFileSync(path.join(rulesDirB, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-b': { type: 'domain', description: 'Rule B', triggers: { prompt: { keywords: ['beta'] } } } }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDirA], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDirA, { recursive: true, force: true });
+    fs.rmSync(tmpDirB, { recursive: true, force: true });
+  });
+
+  it('POST /reload with rulesDir switches to new directory', async () => {
+    const beforeCheck = await request('POST', '/activate', { prompt: 'alpha keyword' }, PORT);
+    assert.ok(beforeCheck.body.hookSpecificOutput.additionalContext.includes('rule-a'), 'rule-a should match before switch');
+
+    const reload = await request('POST', '/reload', { rulesDir: rulesDirB }, PORT);
+    assert.equal(reload.status, 200);
+    assert.equal(reload.body.reloaded, true);
+    assert.equal(reload.body.rulesLoaded, 1);
+    assert.equal(reload.body.rulesDir, rulesDirB);
+
+    const oldCheck = await request('POST', '/activate', { prompt: 'alpha keyword' }, PORT);
+    assert.ok(!oldCheck.body.hookSpecificOutput, 'rule-a should not match after switch');
+
+    const newCheck = await request('POST', '/activate', { prompt: 'beta keyword' }, PORT);
+    assert.ok(newCheck.body.hookSpecificOutput.additionalContext.includes('rule-b'), 'rule-b should match after switch');
+  });
+
+  it('POST /reload without body maintains existing rules', async () => {
+    const reload = await request('POST', '/reload', null, PORT);
+    assert.equal(reload.status, 200);
+    assert.equal(reload.body.reloaded, true);
+    assert.equal(reload.body.rulesLoaded, 1);
+  });
+
+  it('POST /reload with nonexistent rulesDir returns 0 gracefully', async () => {
+    const reload = await request('POST', '/reload', { rulesDir: path.join(os.tmpdir(), 'nonexistent-dir') }, PORT);
+    assert.equal(reload.status, 200);
+    assert.equal(reload.body.reloaded, true);
+    assert.equal(reload.body.rulesLoaded, 0);
+  });
+
+  it('GET /health includes rulesDir', async () => {
+    const health = await request('GET', '/health', null, PORT);
+    assert.equal(health.status, 200);
+    assert.ok('rulesDir' in health.body, 'health response should include rulesDir');
+  });
+});
+
 describe('Kill Switch', () => {
   let serverProcess;
   let tmpDir;
