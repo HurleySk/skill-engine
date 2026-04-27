@@ -10,7 +10,7 @@ No package.json. Tests use the Node.js built-in test runner:
 node --test tests/*.test.js
 ```
 
-Server tests spawn real processes on ports 19751-19757. Ensure those ports are free before running tests.
+Server tests spawn real processes on ports 19751-19762. Ensure those ports are free before running tests.
 
 ## Architecture
 

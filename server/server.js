@@ -308,7 +308,7 @@ function handlePostTool(input) {
   const toolOutput = input && input.tool_output;
 
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
-  const session = getSession(input.session_id);
+  const session = getSession(input && input.session_id);
   const matches = [];
 
   for (const entry of compiledRules) {
