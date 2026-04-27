@@ -128,6 +128,61 @@ describe('add', () => {
     assert.equal(result.ok, true);
     assert.ok(fs.existsSync(nested));
   });
+
+  it('auto-stamps sourceRepo from CLAUDE_PROJECT_DIR', () => {
+    const origEnv = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = 'C:\\repos\\my-project';
+    try {
+      const rule = {
+        type: 'guardrail',
+        description: 'test sourceRepo stamp',
+        triggers: { file: { pathPatterns: ['**/*.sql'] } }
+      };
+      learn.add('stamped-rule', rule, learnedFile);
+      const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+      assert.equal(data.rules['stamped-rule'].sourceRepo, 'C:/repos/my-project');
+    } finally {
+      if (origEnv === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+      else process.env.CLAUDE_PROJECT_DIR = origEnv;
+    }
+  });
+
+  it('does not overwrite explicit sourceRepo', () => {
+    const origEnv = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = 'C:\\repos\\other-project';
+    try {
+      const rule = {
+        type: 'guardrail',
+        description: 'test explicit sourceRepo',
+        sourceRepo: '/custom/repo/path',
+        triggers: { file: { pathPatterns: ['**/*.sql'] } }
+      };
+      learn.add('explicit-repo', rule, learnedFile);
+      const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+      assert.equal(data.rules['explicit-repo'].sourceRepo, '/custom/repo/path');
+    } finally {
+      if (origEnv === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+      else process.env.CLAUDE_PROJECT_DIR = origEnv;
+    }
+  });
+
+  it('omits sourceRepo when CLAUDE_PROJECT_DIR is unset', () => {
+    const origEnv = process.env.CLAUDE_PROJECT_DIR;
+    delete process.env.CLAUDE_PROJECT_DIR;
+    try {
+      const rule = {
+        type: 'guardrail',
+        description: 'test no sourceRepo',
+        triggers: { file: { pathPatterns: ['**/*.sql'] } }
+      };
+      learn.add('no-repo', rule, learnedFile);
+      const data = JSON.parse(fs.readFileSync(learnedFile, 'utf8'));
+      assert.equal(data.rules['no-repo'].sourceRepo, undefined);
+    } finally {
+      if (origEnv === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+      else process.env.CLAUDE_PROJECT_DIR = origEnv;
+    }
+  });
 });
 
 describe('list', () => {
