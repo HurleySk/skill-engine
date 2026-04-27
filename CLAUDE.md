@@ -15,7 +15,7 @@ Server tests spawn real processes on ports 19751-19763. Ensure those ports are f
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/stop`, `/reload`, `/pause`, `/resume`
+- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/reload`, `/pause`, `/resume`
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
 - `hooks/lib/learn.js` — rule/skill classification
@@ -48,7 +48,7 @@ Learned rules are auto-stamped with `sourceRepo` (the normalized `CLAUDE_PROJECT
 
 ## Performance
 
-The server runs on every tool call (`PreToolUse` for `Edit|Write|NotebookEdit`) and every prompt (`UserPromptSubmit`). All changes must be evaluated for latency impact:
+The server runs on mutation tool calls (`PreToolUse` for `Edit|Write|Bash|PowerShell|NotebookEdit`) and every prompt (`UserPromptSubmit`). Matchers in plugin.json filter read-only tools (Read, Grep, Glob, etc.) at the harness level before any HTTP call. All changes must be evaluated for latency impact:
 
 - Rules are pre-compiled at startup (regex patterns, keyword lowercase, toolNames Sets)
 - No per-request allocation or I/O beyond the rule evaluation itself
