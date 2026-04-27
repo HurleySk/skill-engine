@@ -102,6 +102,17 @@ describe('Server Health', () => {
     assert.equal(typeof res.body.pid, 'number');
     assert.ok(res.body.pid > 0, 'pid should be positive');
   });
+
+  it('POST to unknown route returns 200 with empty body (fail-open for hooks)', async () => {
+    const res = await request('POST', '/nonexistent-endpoint', { foo: 'bar' });
+    assert.equal(res.status, 200);
+    assert.deepStrictEqual(res.body, {});
+  });
+
+  it('GET to unknown route returns 404', async () => {
+    const res = await request('GET', '/nonexistent-endpoint');
+    assert.equal(res.status, 404);
+  });
 });
 
 describe('Activate Endpoint', () => {

@@ -599,6 +599,8 @@ async function handleRequest(req, res) {
     return respond(res, 200, { paused: false });
   }
 
+  // POST from hooks → fail-open with empty response (prevents 404 errors during version mismatches)
+  if (method === 'POST') return respond(res, 200, {});
   respond(res, 404, { error: 'Not found' });
 }
 
