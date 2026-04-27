@@ -7,9 +7,14 @@ Rule-based skill activation and guardrail enforcement for Claude Code, powered b
 A Node.js HTTP server starts at session begin, loads all rules into memory, and pre-compiles regex patterns. Two HTTP hooks in `plugin.json` route Claude Code events to the server:
 
 - **UserPromptSubmit** hits `/activate` -- matches prompt text against activation rules and suggests relevant skills.
-- **PreToolUse** hits `/enforce` -- evaluates guardrail rules against the tool call and warns or blocks.
+- **PreToolUse** hits `/enforce` -- evaluates file-path guardrails for Write/Edit/NotebookEdit tools.
+- **PreToolUse** hits `/enforce-tool` -- evaluates tool-input guardrails for mutation tools (Write/Edit/Bash/PowerShell/NotebookEdit).
+- **PreToolUse** hits `/pre-write` -- project-specific safety checks for Write/Edit (prod targeting in task files, security model config validation). Reads configurable rules from `$CLAUDE_PROJECT_DIR/.claude/safety-rules.json`.
+- **PostToolUse** hits `/post-tool` -- evaluates output-trigger rules for mutation tools.
 
 HTTP hooks cost ~6-21ms per event. The v1 command hooks spawned a new process each time, costing ~250-450ms. The server approach keeps enforcement on the hot path without the latency penalty.
+
+Matchers in `plugin.json` filter hooks at the harness level, so read-only tools (Read, Grep, Glob, LS, Agent, etc.) never trigger HTTP calls to `/enforce-tool`, `/post-tool`, or `/pre-write`. This cuts ~50% of round-trips in a typical session.
 
 ## Skills
 
@@ -59,6 +64,10 @@ Both files use the same schema. See `skills/learn-rule/SKILL.md` for the rule st
 
 | Version | Changes |
 |---|---|
+| **v3.2.0** | Add matchers to enforce-tool/post-tool hooks (skip read-only tools); add `/pre-write` endpoint for project-specific safety checks; configurable via `safety-rules.json` |
+| v3.1.5 | Windows case-insensitive sourceRepo matching, sourceRepo display in list |
+| v3.1.4 | Cross-repo rule isolation via sourceRepo scoping |
+| v3.1.3 | Fail-open for unknown POST routes; null-safety in handlePostTool |
 | **v3.1.0** | Fix rules not loading when CLAUDE_PROJECT_DIR is unset; add CLAUDE.md |
 | v3.0.9 | Fix Windows process kill in start-server.sh |
 | v3.0.7 | Fix false-positive enforcement on read-only tools; version-aware restart |

@@ -1235,3 +1235,281 @@ describe('Cross-Repo Rule Isolation', () => {
     assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by repo-A rule');
   });
 });
+
+describe('Pre-Write Endpoint — Task Safety', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19764;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-prewrite-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
+    }));
+    // Write a safety-rules.json in the project dir
+    const claudeDir = path.join(tmpDir, '.claude');
+    fs.writeFileSync(path.join(claudeDir, 'safety-rules.json'), JSON.stringify({
+      prodFactories: ['prd'],
+      prodConnections: ['prd', 'ferconlineprod'],
+      prodEnvironments: ['spprod', 'PRODSPO'],
+      prodDeployStepTypes: ['adf-deploy-pipeline', 'adf-run-pipeline'],
+      prodMutationStepTypes: ['sql-deploy-sp'],
+      prodUriPatterns: ['ferc.crm9.dynamics.com'],
+      devRevertAllowedFactories: ['dev1'],
+      blockedExportBranches: ['main', 'master'],
+      readOnlyStepTypes: ['sql-query', 'adf-pull'],
+      prodUriRegex: 'ferc\\.crm9',
+      prodNameRegex: '\\bprod\\b|PRODSPO|spprod'
+    }));
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('allows non-task file paths (fast exit)', async () => {
+    const filePath = path.join(tmpDir, 'README.md').replace(/\\/g, '/');
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: 'hello' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should allow non-task files');
+  });
+
+  it('denies task file targeting production factory', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'deploy.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'adf-deploy-pipeline', factory: 'prd', pipeline: 'SomePipeline' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('production factory'));
+  });
+
+  it('denies task file targeting production environment', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'test.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'dataverse-delete', environment: 'spprod' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('production environment'));
+  });
+
+  it('denies task file targeting production connection with mutation', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'sp.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'sql-deploy-sp', connection: 'prd', sp: 'p_Test' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('production connection'));
+  });
+
+  it('asks for read-only sql-query on production connection', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'query.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'sql-query', connection: 'prd', sql: 'SELECT TOP 10 * FROM Users' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'ask');
+  });
+
+  it('denies sql-query with DML on production connection', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'dml.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'sql-query', connection: 'prd', sql: 'DELETE FROM Users WHERE id=1' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('DML/DDL'));
+  });
+
+  it('allows task file with safe dev steps', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'safe.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'adf-deploy-pipeline', factory: 'dev1', pipeline: 'TestPipeline' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should allow safe dev task');
+  });
+
+  it('allows read-only step types targeting prod (skipped by readOnlyStepTypes)', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'pull.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'adf-pull', factory: 'prd' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'read-only step types should be allowed');
+  });
+
+  it('denies work-repo-export targeting blocked branch', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'export.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'work-repo-export', branch: 'main' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('blocked branch'));
+  });
+
+  it('denies dev-revert on non-allowed factory', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'revert.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'dev-revert', factory: 'prd' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('dev-revert'));
+  });
+
+  it('allows malformed JSON in task content (fail-open)', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'bad.json').replace(/\\/g, '/');
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: 'not valid json{' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should allow malformed JSON');
+  });
+
+  it('returns empty when paused', async () => {
+    await request('POST', '/pause', null, PORT);
+    const filePath = path.join(tmpDir, 'tasks', 'prod.json').replace(/\\/g, '/');
+    const taskContent = JSON.stringify({
+      steps: [{ type: 'adf-deploy-pipeline', factory: 'prd', pipeline: 'Nope' }]
+    });
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: taskContent }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should be empty when paused');
+    await request('POST', '/resume', null, PORT);
+  });
+
+  it('returns X-Response-Time header', async () => {
+    const filePath = path.join(tmpDir, 'tasks', 'timing.json').replace(/\\/g, '/');
+    const res = await requestRaw('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content: '{}' }
+    }, PORT);
+    assert.ok(res.headers['x-response-time'], 'should have X-Response-Time header');
+  });
+});
+
+describe('Pre-Write Endpoint — Security Model Config', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19765;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-prewrite-sec-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
+    }));
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('allows correct prod org under prod environment', async () => {
+    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const content = "INSERT INTO config VALUES ('prod', 'PRODSPO', 'guid', 'https://ferc.crm9.dynamics.com')";
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should allow correct assignment');
+  });
+
+  it('denies prod org under wrong environment', async () => {
+    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const content = "INSERT INTO config VALUES ('dev', 'PRODSPO', 'guid', 'https://ferc.crm9.dynamics.com')";
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes("must be under 'prod'"));
+  });
+
+  it('asks for prod org under dataqa (intentional override)', async () => {
+    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const content = "INSERT INTO config VALUES ('dataqa', 'spprod', 'guid', 'https://ferc.crm9.dynamics.com')";
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'ask');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('dataqa'));
+  });
+
+  it('denies dev URI under prod environment', async () => {
+    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const content = "INSERT INTO config VALUES ('prod', 'devorg', 'guid', 'https://almwave3.crm9.dynamics.com')";
+    const res = await request('POST', '/pre-write', {
+      tool_input: { file_path: filePath, content }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('Dev URI'));
+  });
+});

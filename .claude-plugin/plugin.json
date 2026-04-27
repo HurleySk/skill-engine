@@ -1,6 +1,6 @@
 {
   "name": "skill-engine",
-  "version": "3.1.5",
+  "version": "3.2.0",
   "description": "Rule-based skill activation and guardrail enforcement for Claude Code. Uses a persistent HTTP server for near-zero latency on every tool call.",
   "author": {
     "name": "Samuel Hurley",
@@ -49,16 +49,27 @@
         ]
       },
       {
+        "matcher": "Write|Edit|Bash|PowerShell|NotebookEdit",
         "hooks": [
           {
             "type": "http",
             "url": "http://localhost:19750/enforce-tool"
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:19750/pre-write"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
+        "matcher": "Write|Edit|Bash|PowerShell|NotebookEdit",
         "hooks": [
           {
             "type": "http",
