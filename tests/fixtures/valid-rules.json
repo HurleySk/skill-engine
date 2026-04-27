@@ -58,6 +58,44 @@
       "skipConditions": {
         "envVars": ["SKIP_CONFIG_WARN"]
       }
+    },
+    "no-force-push": {
+      "type": "guardrail",
+      "enforcement": "block",
+      "priority": "high",
+      "description": "Force push is not allowed",
+      "blockMessage": "Blocked: force push detected. Use regular push instead.",
+      "triggers": {
+        "tool": {
+          "toolNames": ["Bash", "PowerShell"],
+          "inputPatterns": ["push\\s+(--force|-f)"]
+        }
+      }
+    },
+    "test-after-edit": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "medium",
+      "description": "Run tests after editing TypeScript files",
+      "guidance": "You just edited a TypeScript file. Run `npm test` to verify your changes.",
+      "triggers": {
+        "output": {
+          "toolNames": ["Edit", "Write"],
+          "outputPatterns": ["\\.ts"]
+        }
+      }
+    },
+    "commit-reminder": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "low",
+      "description": "Remember to commit your changes",
+      "guidance": "Consider committing your changes before ending this session.",
+      "hookEvents": ["Stop"],
+      "triggers": {},
+      "skipConditions": {
+        "sessionOnce": true
+      }
     }
   }
 }

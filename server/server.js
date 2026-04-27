@@ -41,6 +41,9 @@ function getEnforcement(rule, defaults) {
 // --- Pre-compiled rule cache ---
 let rulesData = null;     // merged { version, defaults, rules }
 let compiledRules = [];   // [{ name, rule, intentRe[], keywordsLower[], pathRe[], exclRe[], contentRe[] }]
+let hasToolTriggerRules = false;
+let hasOutputTriggerRules = false;
+let hasStopRules = false;
 
 function compileRules(data) {
   if (!data || !data.rules) return [];
@@ -67,8 +70,36 @@ function compileRules(data) {
         entry.toolNamesSet = new Set(ft.toolNames);
       }
     }
+    const tt = rule.triggers && rule.triggers.tool;
+    if (tt) {
+      if (tt.toolNames && Array.isArray(tt.toolNames) && tt.toolNames.length) {
+        entry.toolTriggerNamesSet = new Set(tt.toolNames);
+      }
+      entry.inputRe = (tt.inputPatterns || []).reduce((acc, pat) => {
+        try { acc.push(new RegExp(pat, 'i')); } catch {}
+        return acc;
+      }, []);
+    }
+    const ot = rule.triggers && rule.triggers.output;
+    if (ot) {
+      if (ot.toolNames && Array.isArray(ot.toolNames) && ot.toolNames.length) {
+        entry.outputToolNamesSet = new Set(ot.toolNames);
+      }
+      entry.outputRe = (ot.outputPatterns || []).reduce((acc, pat) => {
+        try { acc.push(new RegExp(pat, 'i')); } catch {}
+        return acc;
+      }, []);
+    }
+    if (rule.hookEvents && Array.isArray(rule.hookEvents)) {
+      entry.hookEventsSet = new Set(rule.hookEvents);
+    }
     compiled.push(entry);
   }
+
+  hasToolTriggerRules = compiled.some(e => e.toolTriggerNamesSet || (e.inputRe && e.inputRe.length));
+  hasOutputTriggerRules = compiled.some(e => e.outputToolNamesSet || (e.outputRe && e.outputRe.length));
+  hasStopRules = compiled.some(e => e.hookEventsSet && e.hookEventsSet.has('Stop'));
+
   return compiled;
 }
 
@@ -208,6 +239,145 @@ function handleActivate(input) {
   };
 }
 
+// --- Enforce-tool handler (PreToolUse for any tool) ---
+function handleEnforceTool(input) {
+  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
+  if (!hasToolTriggerRules) return {};
+  const toolName = input && input.tool_name;
+  const toolInput = input && input.tool_input;
+  if (!toolName && !toolInput) return {};
+
+  const inputStr = toolInput ? JSON.stringify(toolInput) : '';
+  const session = getSession(input.session_id);
+  const matches = [];
+
+  for (const entry of compiledRules) {
+    if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) continue;
+    if (entry.rule.type !== 'guardrail') continue;
+    const enforcement = getEnforcement(entry.rule, rulesData.defaults);
+    if (enforcement !== 'block' && enforcement !== 'warn') continue;
+    if (checkSkip(entry.name, entry.rule, session)) continue;
+    if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) continue;
+    if (entry.toolTriggerNamesSet && !toolName) continue;
+    if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) continue;
+    const priority = getPriority(entry.rule, rulesData.defaults);
+    matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
+  }
+
+  if (!matches.length) return {};
+
+  matches.sort((a, b) => {
+    if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
+    if (a.enforcement !== 'block' && b.enforcement === 'block') return 1;
+    return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+  });
+
+  const blockMatch = matches.find(m => m.enforcement === 'block');
+  if (blockMatch) {
+    const reason = blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name);
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason
+      }
+    };
+  }
+
+  const warnings = matches
+    .filter(m => m.enforcement === 'warn')
+    .map(m => '\u26A0\uFE0F ' + m.name + ': ' + m.rule.description);
+  const joined = warnings.join('\n');
+  if (joined) {
+    return {
+      systemMessage: joined,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow'
+      }
+    };
+  }
+  return {};
+}
+
+// --- Post-tool handler (PostToolUse) ---
+function handlePostTool(input) {
+  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
+  if (!hasOutputTriggerRules) return {};
+  const toolName = input && input.tool_name;
+  const toolOutput = input && input.tool_output;
+
+  const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
+  const session = getSession(input.session_id);
+  const matches = [];
+
+  for (const entry of compiledRules) {
+    if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) continue;
+    if (checkSkip(entry.name, entry.rule, session)) continue;
+    if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) continue;
+    if (entry.outputToolNamesSet && !toolName) continue;
+    if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) continue;
+    const priority = getPriority(entry.rule, rulesData.defaults);
+    matches.push({ name: entry.name, rule: entry.rule, priority });
+  }
+
+  if (!matches.length) return {};
+
+  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+
+  if (session) {
+    for (const m of matches) {
+      if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce) {
+        session.firedRules.add(m.name);
+      }
+    }
+  }
+
+  const lines = matches.map(m => m.rule.guidance || m.rule.description);
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      additionalContext: lines.join('\n')
+    }
+  };
+}
+
+// --- Stop handler ---
+function handleStop(input) {
+  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
+  if (!hasStopRules) return {};
+
+  const session = getSession(input && input.session_id);
+  const matches = [];
+
+  for (const entry of compiledRules) {
+    if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) continue;
+    if (checkSkip(entry.name, entry.rule, session)) continue;
+    const priority = getPriority(entry.rule, rulesData.defaults);
+    matches.push({ name: entry.name, rule: entry.rule, priority });
+  }
+
+  if (!matches.length) return {};
+
+  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+
+  if (session) {
+    for (const m of matches) {
+      if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce) {
+        session.firedRules.add(m.name);
+      }
+    }
+  }
+
+  const lines = matches.map(m => m.rule.guidance || m.rule.description);
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'Stop',
+      additionalContext: lines.join('\n')
+    }
+  };
+}
+
 // --- Enforce handler ---
 function handleEnforce(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
@@ -319,6 +489,9 @@ async function handleRequest(req, res) {
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
       rulesDir: RULES_DIR || null,
+      hasToolTriggerRules,
+      hasOutputTriggerRules,
+      hasStopRules,
     });
   }
 
@@ -344,6 +517,54 @@ async function handleRequest(req, res) {
       eventsProcessed++;
       lastEvent = 'enforce';
       const result = handleEnforce(body);
+      const elapsed = process.hrtime.bigint() - startNs;
+      totalResponseTimeNs += elapsed;
+      timedResponses++;
+      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
+      return respond(res, 200, result);
+    } catch {
+      return respond(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+
+  if (method === 'POST' && url === '/enforce-tool') {
+    try {
+      const body = await readBody(req);
+      eventsProcessed++;
+      lastEvent = 'enforce-tool';
+      const result = handleEnforceTool(body);
+      const elapsed = process.hrtime.bigint() - startNs;
+      totalResponseTimeNs += elapsed;
+      timedResponses++;
+      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
+      return respond(res, 200, result);
+    } catch {
+      return respond(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+
+  if (method === 'POST' && url === '/post-tool') {
+    try {
+      const body = await readBody(req);
+      eventsProcessed++;
+      lastEvent = 'post-tool';
+      const result = handlePostTool(body);
+      const elapsed = process.hrtime.bigint() - startNs;
+      totalResponseTimeNs += elapsed;
+      timedResponses++;
+      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
+      return respond(res, 200, result);
+    } catch {
+      return respond(res, 400, { error: 'Invalid JSON' });
+    }
+  }
+
+  if (method === 'POST' && url === '/stop') {
+    try {
+      const body = await readBody(req);
+      eventsProcessed++;
+      lastEvent = 'stop';
+      const result = handleStop(body);
       const elapsed = process.hrtime.bigint() - startNs;
       totalResponseTimeNs += elapsed;
       timedResponses++;

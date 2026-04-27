@@ -47,6 +47,34 @@
             "url": "http://localhost:19750/enforce"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:19750/enforce-tool"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:19750/post-tool"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:19750/stop"
+          }
+        ]
       }
     ]
   }

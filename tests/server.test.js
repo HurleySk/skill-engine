@@ -701,3 +701,369 @@ describe('Tool Name Filtering', () => {
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
   });
 });
+
+describe('Enforce-Tool Endpoint', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19759;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-enforce-tool-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'no-force-push': {
+          type: 'guardrail',
+          enforcement: 'block',
+          priority: 'high',
+          description: 'Force push is not allowed',
+          blockMessage: 'Blocked: force push detected',
+          triggers: {
+            tool: {
+              toolNames: ['Bash', 'PowerShell'],
+              inputPatterns: ['push\\s+(--force|-f)']
+            }
+          }
+        },
+        'warn-rm-rf': {
+          type: 'guardrail',
+          enforcement: 'warn',
+          priority: 'medium',
+          description: 'Dangerous rm -rf detected',
+          triggers: {
+            tool: {
+              toolNames: ['Bash'],
+              inputPatterns: ['rm\\s+-rf']
+            }
+          }
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('blocks matching tool input pattern', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force origin main' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked: force push detected');
+  });
+
+  it('blocks with -f shorthand', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'PowerShell',
+      tool_input: { command: 'git push -f origin main' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('returns empty for non-matching tool name', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Read',
+      tool_input: { command: 'git push --force' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should not match Read tool');
+  });
+
+  it('returns empty for non-matching input', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'git push origin main' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should not match regular push');
+  });
+
+  it('warns for warn-enforcement rules', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /tmp/stuff' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'allow');
+    assert.ok(res.body.systemMessage.includes('warn-rm-rf'));
+  });
+
+  it('returns X-Response-Time header', async () => {
+    const res = await requestRaw('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hello' }
+    }, PORT);
+    assert.ok(res.headers['x-response-time'], 'should have X-Response-Time header');
+  });
+
+  it('health shows hasToolTriggerRules true', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.body.hasToolTriggerRules, true);
+  });
+});
+
+describe('Enforce-Tool Short-Circuit', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19760;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-enforce-tool-sc-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'file-only-rule': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'File-only rule',
+          triggers: { file: { pathPatterns: ['**/*.sql'] } }
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns empty immediately when no tool trigger rules exist', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'anything' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput);
+  });
+
+  it('health shows hasToolTriggerRules false', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.body.hasToolTriggerRules, false);
+    assert.equal(res.body.hasOutputTriggerRules, false);
+    assert.equal(res.body.hasStopRules, false);
+  });
+});
+
+describe('Post-Tool Endpoint', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19761;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-post-tool-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'test-after-edit': {
+          type: 'domain',
+          enforcement: 'suggest',
+          priority: 'medium',
+          description: 'Run tests after editing TypeScript files',
+          guidance: 'You edited a TypeScript file. Run npm test.',
+          triggers: {
+            output: {
+              toolNames: ['Edit', 'Write'],
+              outputPatterns: ['\\.ts']
+            }
+          },
+          skipConditions: { sessionOnce: true }
+        },
+        'high-prio-output': {
+          type: 'domain',
+          enforcement: 'suggest',
+          priority: 'high',
+          description: 'High priority output rule',
+          guidance: 'High priority guidance.',
+          triggers: {
+            output: {
+              toolNames: ['Edit'],
+              outputPatterns: ['\\.ts']
+            }
+          }
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('injects guidance for matching tool output', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Edit',
+      tool_output: 'edited file src/app.ts successfully'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.hookEventName, 'PostToolUse');
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('Run npm test'));
+  });
+
+  it('returns empty for non-matching tool name', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Bash',
+      tool_output: 'edited file src/app.ts'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should not match Bash tool');
+  });
+
+  it('returns empty for non-matching output', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Edit',
+      tool_output: 'edited file src/app.js successfully'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should not match .js output');
+  });
+
+  it('respects sessionOnce — second call skips fired rule', async () => {
+    const body = { tool_name: 'Edit', tool_output: 'file.ts edited', session_id: 'post-once' };
+    const first = await request('POST', '/post-tool', body, PORT);
+    assert.ok(first.body.hookSpecificOutput.additionalContext.includes('Run npm test'));
+    const second = await request('POST', '/post-tool', body, PORT);
+    const ctx = second.body.hookSpecificOutput ? second.body.hookSpecificOutput.additionalContext : '';
+    assert.ok(!ctx.includes('Run npm test'), 'sessionOnce rule should not fire again');
+  });
+
+  it('sorts by priority — high before medium', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Edit',
+      tool_output: 'edited app.ts',
+      session_id: 'prio-test'
+    }, PORT);
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    const highIdx = ctx.indexOf('High priority guidance');
+    const medIdx = ctx.indexOf('Run npm test');
+    assert.ok(highIdx < medIdx, 'HIGH should appear before MEDIUM');
+  });
+
+  it('health shows hasOutputTriggerRules true', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.body.hasOutputTriggerRules, true);
+  });
+});
+
+describe('Stop Endpoint', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  const PORT = 19762;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-stop-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'commit-reminder': {
+          type: 'domain',
+          enforcement: 'suggest',
+          priority: 'low',
+          description: 'Remember to commit',
+          guidance: 'Consider committing your changes before ending.',
+          hookEvents: ['Stop'],
+          triggers: {},
+          skipConditions: { sessionOnce: true }
+        },
+        'test-reminder': {
+          type: 'domain',
+          enforcement: 'suggest',
+          priority: 'high',
+          description: 'Run tests before stopping',
+          guidance: 'Have you run the test suite?',
+          hookEvents: ['Stop'],
+          triggers: {}
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('fires Stop rules and injects guidance', async () => {
+    const res = await request('POST', '/stop', { session_id: 'stop-test-1' }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.hookEventName, 'Stop');
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('committing'));
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('test suite'));
+  });
+
+  it('respects sessionOnce — second call skips once-only rule', async () => {
+    const body = { session_id: 'stop-once' };
+    const first = await request('POST', '/stop', body, PORT);
+    assert.ok(first.body.hookSpecificOutput.additionalContext.includes('committing'));
+    const second = await request('POST', '/stop', body, PORT);
+    const ctx = second.body.hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('committing'), 'sessionOnce commit rule should not fire again');
+    assert.ok(ctx.includes('test suite'), 'non-sessionOnce rule should still fire');
+  });
+
+  it('sorts by priority — high before low', async () => {
+    const res = await request('POST', '/stop', { session_id: 'stop-prio' }, PORT);
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    const highIdx = ctx.indexOf('test suite');
+    const lowIdx = ctx.indexOf('committing');
+    assert.ok(highIdx < lowIdx, 'HIGH should appear before LOW');
+  });
+
+  it('health shows hasStopRules true', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.body.hasStopRules, true);
+  });
+});

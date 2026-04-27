@@ -25,6 +25,9 @@ curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 > - Events processed: {eventsProcessed}
 > - Last event: {lastEvent}
 > - Active sessions: {activeSessions}
+> - Tool trigger rules: {hasToolTriggerRules}
+> - Output trigger rules: {hasOutputTriggerRules}
+> - Stop rules: {hasStopRules}
 
 3. **If not running**, display:
 
