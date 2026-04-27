@@ -40,6 +40,10 @@ function add(ruleName, rule, filePath) {
   if (!validation.ok) return validation;
 
   const normalized = normalizeTriggerPaths(rule);
+  if (!normalized.sourceRepo) {
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || null;
+    if (projectDir) normalized.sourceRepo = normalizePath(projectDir);
+  }
   const data = loadLearnedFile(filePath) || { version: '1.0', rules: {} };
 
   if (data.rules[ruleName]) {

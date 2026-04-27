@@ -10,7 +10,7 @@ No package.json. Tests use the Node.js built-in test runner:
 node --test tests/*.test.js
 ```
 
-Server tests spawn real processes on ports 19751-19762. Ensure those ports are free before running tests.
+Server tests spawn real processes on ports 19751-19763. Ensure those ports are free before running tests.
 
 ## Architecture
 
@@ -41,6 +41,10 @@ Server tests spawn real processes on ports 19751-19762. Ensure those ports are f
 5. After `/reload-plugins` in a session, run `/skill-engine:start` to restart the server to the new version.
 
 Multiple fix commits can precede a single `[release]` commit. Non-release pushes sync the current version to the marketplace without bumping.
+
+## Cross-Repo Rule Scoping
+
+Learned rules are auto-stamped with `sourceRepo` (the normalized `CLAUDE_PROJECT_DIR` at learn time). At enforcement time, rules with a `sourceRepo` that doesn't match the server's current `PROJECT_ROOT` are skipped. Rules without `sourceRepo` are treated as global and match everywhere (backward compatible). The server derives `PROJECT_ROOT` from `RULES_DIR` by stripping `/.claude/skills`.
 
 ## Performance
 

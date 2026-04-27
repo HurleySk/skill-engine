@@ -17,6 +17,21 @@ function argVal(name) {
 }
 const PORT = parseInt(argVal('--port') || process.env.SKILL_ENGINE_PORT || '19750', 10);
 let RULES_DIR = argVal('--rules-dir') || null;
+let PROJECT_ROOT = null;
+
+function deriveProjectRoot(rulesDir) {
+  if (!rulesDir) return null;
+  const normalized = normalizePath(rulesDir);
+  const suffix = '/.claude/skills';
+  if (normalized.endsWith(suffix)) return normalized.slice(0, -suffix.length);
+  return normalizePath(path.dirname(path.dirname(rulesDir)));
+}
+
+function ruleMatchesProject(entry) {
+  if (!entry.sourceRepo) return true;
+  if (!PROJECT_ROOT) return true;
+  return entry.sourceRepo === PROJECT_ROOT;
+}
 
 // --- Version from plugin.json (read once at startup) ---
 const PLUGIN_JSON = path.resolve(__dirname, '..', '.claude-plugin', 'plugin.json');
@@ -50,6 +65,7 @@ function compileRules(data) {
   const compiled = [];
   for (const [name, rule] of Object.entries(data.rules)) {
     const entry = { name, rule };
+    if (rule.sourceRepo) entry.sourceRepo = normalizePath(rule.sourceRepo);
     const pt = rule.triggers && rule.triggers.prompt;
     if (pt) {
       entry.keywordsLower = (pt.keywords || []).map(k => k.toLowerCase());
@@ -104,6 +120,7 @@ function compileRules(data) {
 }
 
 function loadAndCompile() {
+  PROJECT_ROOT = deriveProjectRoot(RULES_DIR);
   let mainFile, learnedFile;
   if (RULES_DIR) {
     mainFile = path.join(RULES_DIR, 'skill-rules.json');
@@ -198,6 +215,7 @@ function handleActivate(input) {
   const matches = [];
 
   for (const entry of compiledRules) {
+    if (!ruleMatchesProject(entry)) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (!entry.keywordsLower && !entry.intentRe) continue;
     if (!matchPromptCompiled(prompt, entry)) continue;
@@ -252,6 +270,7 @@ function handleEnforceTool(input) {
   const matches = [];
 
   for (const entry of compiledRules) {
+    if (!ruleMatchesProject(entry)) continue;
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) continue;
     if (entry.rule.type !== 'guardrail') continue;
     const enforcement = getEnforcement(entry.rule, rulesData.defaults);
@@ -312,6 +331,7 @@ function handlePostTool(input) {
   const matches = [];
 
   for (const entry of compiledRules) {
+    if (!ruleMatchesProject(entry)) continue;
     if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) continue;
@@ -351,6 +371,7 @@ function handleStop(input) {
   const matches = [];
 
   for (const entry of compiledRules) {
+    if (!ruleMatchesProject(entry)) continue;
     if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     const priority = getPriority(entry.rule, rulesData.defaults);
@@ -389,6 +410,7 @@ function handleEnforce(input) {
   const matches = [];
 
   for (const entry of compiledRules) {
+    if (!ruleMatchesProject(entry)) continue;
     if (entry.rule.type !== 'guardrail') continue;
     const enforcement = getEnforcement(entry.rule, rulesData.defaults);
     if (enforcement !== 'block' && enforcement !== 'warn') continue;
@@ -489,6 +511,7 @@ async function handleRequest(req, res) {
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
       rulesDir: RULES_DIR || null,
+      projectRoot: PROJECT_ROOT || null,
       hasToolTriggerRules,
       hasOutputTriggerRules,
       hasStopRules,

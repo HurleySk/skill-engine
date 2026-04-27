@@ -1078,3 +1078,161 @@ describe('Stop Endpoint', () => {
     assert.equal(res.body.hasStopRules, true);
   });
 });
+
+describe('Cross-Repo Rule Isolation', () => {
+  let serverProcess;
+  let tmpDirA;
+  let tmpDirB;
+  let rulesDirA;
+  let rulesDirB;
+  let testFileB;
+  const PORT = 19763;
+
+  before(async () => {
+    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-repoA-'));
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-repoB-'));
+    rulesDirA = path.join(tmpDirA, '.claude', 'skills');
+    rulesDirB = path.join(tmpDirB, '.claude', 'skills');
+    fs.mkdirSync(rulesDirA, { recursive: true });
+    fs.mkdirSync(rulesDirB, { recursive: true });
+
+    const normalizedA = tmpDirA.replace(/\\/g, '/');
+    const normalizedB = tmpDirB.replace(/\\/g, '/');
+
+    const rulesA = {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'scoped-to-a': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'Rule scoped to repo A',
+          blockMessage: 'Blocked by repo-A rule',
+          sourceRepo: normalizedA,
+          triggers: {
+            file: { pathPatterns: ['**/pipeline/*.json'] }
+          }
+        },
+        'global-rule': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'Global rule (no sourceRepo)',
+          blockMessage: 'Blocked by global rule',
+          triggers: {
+            file: { pathPatterns: ['**/*.dangerous'] }
+          }
+        },
+        'scoped-activate': {
+          type: 'domain',
+          enforcement: 'suggest',
+          description: 'Activation rule scoped to repo A',
+          sourceRepo: normalizedA,
+          triggers: { prompt: { keywords: ['scoped-keyword'] } }
+        },
+        'global-activate': {
+          type: 'domain',
+          enforcement: 'suggest',
+          description: 'Global activation rule',
+          triggers: { prompt: { keywords: ['global-keyword'] } }
+        }
+      }
+    };
+
+    // Write the same rules into both dirs so we can test scoping after reload
+    fs.writeFileSync(path.join(rulesDirA, 'learned-rules.json'), JSON.stringify(rulesA));
+    fs.writeFileSync(path.join(rulesDirB, 'learned-rules.json'), JSON.stringify(rulesA));
+
+    // Create test files in repo B
+    const pipelineDir = path.join(tmpDirB, 'pipeline');
+    fs.mkdirSync(pipelineDir, { recursive: true });
+    testFileB = path.join(pipelineDir, 'config.json');
+    fs.writeFileSync(testFileB, '{}');
+
+    // Start server pointed at repo A
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDirA], { stdio: 'pipe' });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDirA, { recursive: true, force: true });
+    fs.rmSync(tmpDirB, { recursive: true, force: true });
+  });
+
+  it('rule with matching sourceRepo fires when server is in that repo', async () => {
+    const fileInA = path.join(tmpDirA, 'pipeline', 'config.json');
+    const dirA = path.dirname(fileInA);
+    if (!fs.existsSync(dirA)) fs.mkdirSync(dirA, { recursive: true });
+    fs.writeFileSync(fileInA, '{}');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: fileInA } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by repo-A rule');
+  });
+
+  it('rule with non-matching sourceRepo is skipped after reload to different repo', async () => {
+    // Reload server to point at repo B
+    const reloadRes = await request('POST', '/reload', { rulesDir: rulesDirB }, PORT);
+    assert.equal(reloadRes.body.reloaded, true);
+
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testFileB } }, PORT);
+    assert.equal(res.status, 200);
+    // scoped-to-a should NOT fire because sourceRepo is repo A, but server is now in repo B
+    const hso = res.body.hookSpecificOutput;
+    if (hso && hso.permissionDecision === 'deny') {
+      assert.notEqual(hso.permissionDecisionReason, 'Blocked by repo-A rule',
+        'scoped rule from repo A should not fire in repo B');
+    }
+  });
+
+  it('rule without sourceRepo (global) fires in any repo', async () => {
+    const dangerousFile = path.join(tmpDirB, 'bad.dangerous');
+    fs.writeFileSync(dangerousFile, 'danger');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: dangerousFile } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by global rule');
+  });
+
+  it('scoped activation rule is skipped in different repo', async () => {
+    // Server is still pointed at repo B from earlier reload
+    const res = await request('POST', '/activate', { prompt: 'check scoped-keyword here' }, PORT);
+    assert.equal(res.status, 200);
+    // scoped-activate should NOT fire
+    const hso = res.body.hookSpecificOutput;
+    if (hso && hso.additionalContext) {
+      assert.ok(!hso.additionalContext.includes('scoped-activate'),
+        'scoped activation rule should not fire in wrong repo');
+    }
+  });
+
+  it('global activation rule fires in any repo', async () => {
+    const res = await request('POST', '/activate', { prompt: 'check global-keyword here' }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput, 'global activation rule should fire');
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('global-activate'));
+  });
+
+  it('health shows projectRoot matching current repo', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.projectRoot, 'health should include projectRoot');
+    const expectedRoot = tmpDirB.replace(/\\/g, '/');
+    assert.equal(res.body.projectRoot, expectedRoot);
+  });
+
+  it('reload back to repo A re-enables scoped rules', async () => {
+    await request('POST', '/reload', { rulesDir: rulesDirA }, PORT);
+    const fileInA = path.join(tmpDirA, 'pipeline', 'config.json');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: fileInA } }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by repo-A rule');
+  });
+});
