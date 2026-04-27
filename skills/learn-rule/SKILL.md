@@ -39,20 +39,22 @@ Accept natural language. Examples:
 Based on the lesson and conversation context, infer:
 
 1. **Rule name**: Slugified from the lesson (e.g., `parameterized-queries-sql`). Lowercase, hyphens, no special characters.
-2. **Type**: Almost always `guardrail` — the user wants enforcement.
-3. **Enforcement**: Default to `warn` unless the user explicitly says "block" or "prevent."
+2. **Type**: Almost always `guardrail` — the user wants enforcement. Use `domain` for guidance-only rules (PostToolUse, Stop).
+3. **Enforcement**: Default to `warn` unless the user explicitly says "block" or "prevent." PostToolUse and Stop rules cannot block — use `suggest` or `warn`.
 4. **Priority**: Default to `medium`. Use `high` if emphasized. Use `critical` only for absolute statements.
-5. **Triggers**:
-   - Derive `pathPatterns` from file extensions or directories in context.
-   - If specific content patterns mentioned, derive `contentPatterns`.
-   - Keep patterns relative — use `**/*.sql` not absolute paths.
-   - **CRITICAL (Windows):** All path patterns must use forward slashes. Never write backslashes.
+5. **Triggers** — choose the right trigger namespace:
+   - **`triggers.file`** — for file-editing tools (Edit/Write/NotebookEdit). Derive `pathPatterns` from file extensions or directories in context. If specific content patterns mentioned, derive `contentPatterns`. Keep patterns relative — use `**/*.sql` not absolute paths. **CRITICAL (Windows):** All path patterns must use forward slashes. Never write backslashes.
+   - **`triggers.tool`** — for any tool call (Bash, PowerShell, Read, etc.). Use `toolNames` to restrict which tools match. Use `inputPatterns` with regex against the stringified tool input.
+   - **`triggers.output`** — for PostToolUse reactions. Use `toolNames` to filter and `outputPatterns` to match tool output. Include a `guidance` field for the follow-up text.
+   - **`hookEvents: ["Stop"]`** — for end-of-turn reminders. No trigger matching needed. Include a `guidance` field.
 6. **Description**: Clear, human-readable sentence that appears as the warning message.
+7. **Guidance** (optional): For PostToolUse and Stop rules, the text injected as follow-up context. Falls back to `description` if omitted.
 
 ### Step 3: Present the Proposed Rule
 
-Show the complete rule for confirmation:
+Show the complete rule for confirmation. Examples by trigger type:
 
+**File trigger (Edit/Write guardrail):**
 ```
 Proposed rule: parameterized-queries-sql
 Type: guardrail | Enforcement: warn | Priority: medium
@@ -71,9 +73,75 @@ Full JSON:
     }
   }
 }
-
-Want to adjust anything, or should I save this?
 ```
+
+**Tool trigger (Bash/PowerShell guardrail):**
+```
+Proposed rule: no-force-push
+Type: guardrail | Enforcement: block | Priority: high
+Triggers: Bash/PowerShell commands containing "push --force" or "push -f"
+Message: "Force push is not allowed on this project"
+
+Full JSON:
+{
+  "type": "guardrail",
+  "enforcement": "block",
+  "priority": "high",
+  "description": "Force push is not allowed on this project",
+  "blockMessage": "Blocked: force push detected. Use regular push instead.",
+  "triggers": {
+    "tool": {
+      "toolNames": ["Bash", "PowerShell"],
+      "inputPatterns": ["push\\s+(--force|-f)"]
+    }
+  }
+}
+```
+
+**Output trigger (PostToolUse guidance):**
+```
+Proposed rule: test-after-edit
+Type: domain | Enforcement: suggest | Priority: medium
+Triggers: After editing .ts files, remind to run tests
+Guidance: "You just edited a TypeScript file. Run npm test."
+
+Full JSON:
+{
+  "type": "domain",
+  "enforcement": "suggest",
+  "priority": "medium",
+  "description": "Run tests after editing TypeScript files",
+  "guidance": "You just edited a TypeScript file. Run `npm test` to verify your changes.",
+  "triggers": {
+    "output": {
+      "toolNames": ["Edit", "Write"],
+      "outputPatterns": ["\\.ts"]
+    }
+  }
+}
+```
+
+**Stop rule (end-of-turn reminder):**
+```
+Proposed rule: commit-reminder
+Type: domain | Enforcement: suggest | Priority: low
+Triggers: End of every turn (once per session)
+Guidance: "Consider committing your changes."
+
+Full JSON:
+{
+  "type": "domain",
+  "enforcement": "suggest",
+  "priority": "low",
+  "description": "Remember to commit your changes",
+  "guidance": "Consider committing your changes before ending this session.",
+  "hookEvents": ["Stop"],
+  "triggers": {},
+  "skipConditions": { "sessionOnce": true }
+}
+```
+
+After presenting, ask: "Want to adjust anything, or should I save this?"
 
 ### Step 4: Save
 
