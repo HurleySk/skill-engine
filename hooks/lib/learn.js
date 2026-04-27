@@ -79,6 +79,9 @@ function list(filePath) {
     if (prompt && prompt.keywords) {
       lines.push(`    Keywords: ${prompt.keywords.join(', ')}`);
     }
+    if (rule.sourceRepo) {
+      lines.push(`    Scoped to: ${rule.sourceRepo}`);
+    }
     lines.push('');
   }
   return { ok: true, output: lines.join('\n') };

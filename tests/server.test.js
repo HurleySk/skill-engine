@@ -1097,7 +1097,6 @@ describe('Cross-Repo Rule Isolation', () => {
     fs.mkdirSync(rulesDirB, { recursive: true });
 
     const normalizedA = tmpDirA.replace(/\\/g, '/');
-    const normalizedB = tmpDirB.replace(/\\/g, '/');
 
     const rulesA = {
       version: '1.0',
