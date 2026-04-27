@@ -21,6 +21,7 @@ HTTP hooks cost ~6-21ms per event. The v1 command hooks spawned a new process ea
 | start | `/skill-engine:start` | Start the server or check if it is already running |
 | stop | `/skill-engine:stop` | Stop the server |
 | status | `/skill-engine:status` | Show server diagnostics (port, uptime, rules, events) |
+| review | `/skill-engine:review` | Audit Claude config ecosystem and cross-reference against codebase |
 | perf-check | `/skill-engine:perf-check` | Dispatch a performance audit subagent |
 
 ## Server Lifecycle
