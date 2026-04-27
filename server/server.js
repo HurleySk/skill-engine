@@ -27,9 +27,12 @@ function deriveProjectRoot(rulesDir) {
   return normalizePath(path.dirname(path.dirname(rulesDir)));
 }
 
+const IS_WIN = process.platform === 'win32';
+
 function ruleMatchesProject(entry) {
   if (!entry.sourceRepo) return true;
   if (!PROJECT_ROOT) return true;
+  if (IS_WIN) return entry.sourceRepo.toLowerCase() === PROJECT_ROOT.toLowerCase();
   return entry.sourceRepo === PROJECT_ROOT;
 }
 
