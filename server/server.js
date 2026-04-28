@@ -320,10 +320,10 @@ function handleEnforceTool(input) {
   const joined = warnings.join('\n');
   if (joined) {
     return {
-      systemMessage: joined,
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'allow'
+        permissionDecision: 'allow',
+        additionalContext: joined
       }
     };
   }
@@ -466,10 +466,10 @@ function handleEnforce(input) {
   const joined = warnings.join('\n');
   if (joined) {
     return {
-      systemMessage: joined,
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'allow'
+        permissionDecision: 'allow',
+        additionalContext: joined
       }
     };
   }
