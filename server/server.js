@@ -408,6 +408,7 @@ function handleEnforce(input) {
   const filePath = input && input.tool_input && input.tool_input.file_path;
   if (!filePath) return {};
   const toolName = input && input.tool_name;
+  const writeContent = input && input.tool_input && (input.tool_input.content || input.tool_input.new_string || '');
 
   const session = getSession(input.session_id);
   const matches = [];
@@ -419,9 +420,14 @@ function handleEnforce(input) {
     if (enforcement !== 'block' && enforcement !== 'warn') continue;
     if (!entry.pathRe || !entry.pathRe.length) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
-    // Fail-open: if toolName is absent, still evaluate the rule (over-enforce > under-enforce for guardrails)
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) continue;
     if (!matchFileCompiled(filePath, entry)) continue;
+    // Check content patterns against the content being written
+    if (entry.contentRe && entry.contentRe.length > 0) {
+      if (!writeContent) continue;
+      const contentMatched = entry.contentRe.some(re => re.test(writeContent));
+      if (!contentMatched) continue;
+    }
     const priority = getPriority(entry.rule, rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
   }
