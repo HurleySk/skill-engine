@@ -194,7 +194,15 @@ function matchPromptCompiled(prompt, entry) {
 }
 
 function matchFileCompiled(filePath, entry) {
-  const normalized = normalizePath(filePath);
+  let normalized = normalizePath(filePath);
+  // Strip project root to get relative path for glob matching
+  if (PROJECT_ROOT) {
+    const root = IS_WIN ? PROJECT_ROOT.toLowerCase() : PROJECT_ROOT;
+    const test = IS_WIN ? normalized.toLowerCase() : normalized;
+    if (test.startsWith(root + '/')) {
+      normalized = normalized.slice(PROJECT_ROOT.length + 1);
+    }
+  }
   if (entry.exclRe && entry.exclRe.some(re => re.test(normalized))) return false;
   if (!entry.pathRe || !entry.pathRe.length) return false;
   if (!entry.pathRe.some(re => re.test(normalized))) return false;
