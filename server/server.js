@@ -33,6 +33,49 @@ try {
   SERVER_VERSION = JSON.parse(fs.readFileSync(PLUGIN_JSON, 'utf8')).version || 'unknown';
 } catch {}
 
+// --- Self-upgrade: if a newer version exists in cache, re-exec into it ---
+// Old start-server.sh versions (pre-3.2.7) have no semver guard and will
+// happily start an ancient server.js, killing whatever was running. This
+// check ensures that even if launched from a stale cache entry, the server
+// always runs the newest available code.
+if (!process.env.SKILL_ENGINE_UPGRADED) {
+  const cacheBase = path.join(
+    process.env.HOME || process.env.USERPROFILE || '',
+    '.claude', 'plugins', 'cache', 'hurleysk-marketplace', 'skill-engine'
+  );
+  try {
+    const versions = fs.readdirSync(cacheBase, { withFileTypes: true })
+      .filter(d => d.isDirectory() && /^\d+\.\d+\.\d+$/.test(d.name))
+      .map(d => d.name)
+      .sort((a, b) => {
+        const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+        for (let i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; }
+        return 0;
+      });
+    const latest = versions[versions.length - 1];
+    if (latest && latest !== SERVER_VERSION) {
+      const lp = latest.split('.').map(Number), cp = SERVER_VERSION.split('.').map(Number);
+      let newer = false;
+      for (let i = 0; i < 3; i++) {
+        if (lp[i] > cp[i]) { newer = true; break; }
+        if (lp[i] < cp[i]) break;
+      }
+      if (newer) {
+        const target = path.join(cacheBase, latest, 'server', 'server.js');
+        if (fs.existsSync(target)) {
+          const { spawn } = require('child_process');
+          const child = spawn(process.execPath, [target, ...process.argv.slice(2)], {
+            stdio: 'ignore', detached: true,
+            env: { ...process.env, SKILL_ENGINE_UPGRADED: '1' }
+          });
+          child.unref();
+          process.exit(0);
+        }
+      }
+    }
+  } catch {}
+}
+
 // --- Response timing ---
 let totalResponseTimeNs = BigInt(0);
 let timedResponses = 0;
