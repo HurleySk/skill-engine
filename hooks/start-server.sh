@@ -15,7 +15,7 @@ if [ -n "$HEALTH" ]; then
   # Server is running — check if version matches
   RUNNING_VERSION=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version||'')}catch{console.log('')}})" 2>/dev/null)
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$SCRIPT_DIR/../.claude-plugin/plugin.json','utf8')).version||'')}catch{console.log('')}" 2>/dev/null)
+  CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(require('path').resolve(process.argv[1]),'utf8')).version||'')}catch{console.log('')}" "$SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null)
 
   if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" = "$CURRENT_VERSION" ]; then
     exit 0
