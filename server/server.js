@@ -66,6 +66,16 @@ class RuleCache {
     }
   }
 
+  getCachedState() {
+    return {
+      rulesDir: this._rulesDir,
+      rulesLoaded: this._compiledRules.length,
+      hasToolTriggerRules: this._hasToolTriggerRules,
+      hasOutputTriggerRules: this._hasOutputTriggerRules,
+      hasStopRules: this._hasStopRules,
+    };
+  }
+
   getRules(rulesDir) {
     if (!rulesDir) {
       return {
@@ -864,7 +874,8 @@ async function handleRequest(req, res) {
   const startNs = process.hrtime.bigint();
 
   if (method === 'GET' && url === '/health') {
-    const ctx = getRequestContext(null);
+    getRequestContext(null); // warm cache from process.env if not yet populated
+    const cached = ruleCache.getCachedState();
     const avgMs = timedResponses > 0
       ? Number(totalResponseTimeNs / BigInt(timedResponses)) / 1e6
       : 0;
@@ -872,18 +883,17 @@ async function handleRequest(req, res) {
       version: SERVER_VERSION,
       pid: process.pid,
       uptime: process.uptime(),
-      rulesLoaded: ctx.compiledRules.length,
+      rulesLoaded: cached.rulesLoaded,
       port: PORT,
       lastEvent,
       eventsProcessed,
       activeSessions: sessions.size,
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
-      rulesDir: ctx.rulesDir || null,
-      projectRoot: ctx.projectRoot || null,
-      hasToolTriggerRules: ctx.hasToolTriggerRules,
-      hasOutputTriggerRules: ctx.hasOutputTriggerRules,
-      hasStopRules: ctx.hasStopRules,
+      rulesDir: cached.rulesDir || null,
+      hasToolTriggerRules: cached.hasToolTriggerRules,
+      hasOutputTriggerRules: cached.hasOutputTriggerRules,
+      hasStopRules: cached.hasStopRules,
     });
   }
 
