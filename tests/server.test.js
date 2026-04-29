@@ -1,86 +1,27 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');
-
-const SERVER_PATH = path.resolve(__dirname, '..', 'server', 'server.js');
-const TEST_PORT = 19751;
-
-function request(method, urlPath, body, port) {
-  port = port || TEST_PORT;
-  return new Promise((resolve, reject) => {
-    const options = { hostname: 'localhost', port, path: urlPath, method,
-      headers: body ? { 'Content-Type': 'application/json' } : {} };
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, body: data ? JSON.parse(data) : null, raw: data }); }
-        catch { resolve({ status: res.statusCode, body: null, raw: data }); }
-      });
-    });
-    req.on('error', reject);
-    if (body) req.write(JSON.stringify(body));
-    req.end();
-  });
-}
-
-function requestRaw(method, urlPath, body, port) {
-  port = port || TEST_PORT;
-  return new Promise((resolve, reject) => {
-    const options = { hostname: 'localhost', port, path: urlPath, method,
-      headers: body ? { 'Content-Type': 'application/json' } : {} };
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        resolve({ status: res.statusCode, headers: res.headers, body: data, raw: data });
-      });
-    });
-    req.on('error', reject);
-    if (body) req.write(JSON.stringify(body));
-    req.end();
-  });
-}
+const { startTestServer, stopTestServer, writeRules, request, requestRaw } = require('./test-harness');
 
 describe('Server Health', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
+  const PORT = 19751;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-server-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: { 'test-rule': { type: 'domain', description: 'Test rule',
         triggers: { prompt: { keywords: ['test-keyword'] } } } }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(TEST_PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('GET /health returns server status', async () => {
-    const res = await request('GET', '/health');
+    const res = await request('GET', '/health', null, PORT);
     assert.equal(res.status, 200);
     assert.equal(typeof res.body.uptime, 'number');
     assert.equal(res.body.rulesLoaded, 1);
@@ -88,47 +29,42 @@ describe('Server Health', () => {
   });
 
   it('GET /health includes timing stats', async () => {
-    const res = await request('GET', '/health');
+    const res = await request('GET', '/health', null, PORT);
     assert.equal(typeof res.body.avgResponseTimeMs, 'number');
   });
 
   it('GET /health includes version from plugin.json', async () => {
-    const res = await request('GET', '/health');
+    const res = await request('GET', '/health', null, PORT);
     assert.equal(res.status, 200);
     assert.equal(typeof res.body.version, 'string');
     assert.ok(res.body.version.match(/^\d+\.\d+\.\d+$/), 'version should be semver');
   });
 
   it('GET /health includes pid as a number', async () => {
-    const res = await request('GET', '/health');
+    const res = await request('GET', '/health', null, PORT);
     assert.equal(res.status, 200);
     assert.equal(typeof res.body.pid, 'number');
     assert.ok(res.body.pid > 0, 'pid should be positive');
   });
 
   it('POST to unknown route returns 200 with empty body (fail-open for hooks)', async () => {
-    const res = await request('POST', '/nonexistent-endpoint', { foo: 'bar' });
+    const res = await request('POST', '/nonexistent-endpoint', { foo: 'bar' }, PORT);
     assert.equal(res.status, 200);
     assert.deepStrictEqual(res.body, {});
   });
 
   it('GET to unknown route returns 404', async () => {
-    const res = await request('GET', '/nonexistent-endpoint');
+    const res = await request('GET', '/nonexistent-endpoint', null, PORT);
     assert.equal(res.status, 404);
   });
 });
 
 describe('Activate Endpoint', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19752;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-activate-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -146,24 +82,10 @@ describe('Activate Endpoint', () => {
           triggers: { prompt: { keywords: ['high-keyword'] } }
         }
       }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('returns skill suggestions for matching prompt', async () => {
     const res = await request('POST', '/activate', { prompt: 'check the test-keyword here' }, PORT);
@@ -200,24 +122,19 @@ describe('Activate Endpoint', () => {
   });
 
   it('POST /activate returns X-Response-Time header', async () => {
-    const res = await requestRaw('POST', '/activate', { prompt: 'test-keyword', session_id: 'timing-1' }, 19752);
+    const res = await requestRaw('POST', '/activate', { prompt: 'test-keyword', session_id: 'timing-1' }, PORT);
     assert.ok(res.headers['x-response-time'], 'should have X-Response-Time header');
     assert.ok(res.headers['x-response-time'].endsWith('ms'), 'should end with ms');
   });
 });
 
 describe('Enforce Endpoint', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   let testSqlFile;
   const PORT = 19753;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-enforce-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -244,28 +161,13 @@ describe('Enforce Endpoint', () => {
           }
         }
       }
-    }));
+    });
 
-    testSqlFile = path.join(tmpDir, 'test.sql');
+    testSqlFile = path.join(harness.tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'CREATE PROCEDURE [dbo].[Test]\nAS\nBEGIN\n  SELECT 1\nEND');
-
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('returns deny for matching guardrail with content pattern', async () => {
     const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
@@ -277,7 +179,7 @@ describe('Enforce Endpoint', () => {
   });
 
   it('returns warn for matching warn guardrail', async () => {
-    const configFile = path.join(tmpDir, 'app.config');
+    const configFile = path.join(harness.tmpDir, 'app.config');
     fs.writeFileSync(configFile, '<configuration />');
     const res = await request('POST', '/enforce', { tool_input: { file_path: configFile } }, PORT);
     assert.equal(res.status, 200);
@@ -288,7 +190,7 @@ describe('Enforce Endpoint', () => {
   });
 
   it('returns empty for non-matching file', async () => {
-    const txtFile = path.join(tmpDir, 'readme.txt');
+    const txtFile = path.join(harness.tmpDir, 'readme.txt');
     fs.writeFileSync(txtFile, 'hello');
     const res = await request('POST', '/enforce', { tool_input: { file_path: txtFile } }, PORT);
     assert.equal(res.status, 200);
@@ -304,51 +206,33 @@ describe('Enforce Endpoint', () => {
 });
 
 describe('Cross-Project Env Switching', () => {
-  let serverProcess;
-  let tmpDirA;
+  let harness;
   let tmpDirB;
   const PORT = 19758;
 
   before(async () => {
-    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-switch-a-'));
     tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-switch-b-'));
-    const rulesDirA = path.join(tmpDirA, '.claude', 'skills');
     const rulesDirB = path.join(tmpDirB, '.claude', 'skills');
-    fs.mkdirSync(rulesDirA, { recursive: true });
     fs.mkdirSync(rulesDirB, { recursive: true });
-    fs.writeFileSync(path.join(rulesDirA, 'skill-rules.json'), JSON.stringify({
-      version: '1.0',
-      defaults: { enforcement: 'suggest', priority: 'medium' },
-      rules: { 'rule-a': { type: 'domain', description: 'Rule A', triggers: { prompt: { keywords: ['alpha'] } } } }
-    }));
     fs.writeFileSync(path.join(rulesDirB, 'skill-rules.json'), JSON.stringify({
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: { 'rule-b': { type: 'domain', description: 'Rule B', triggers: { prompt: { keywords: ['beta'] } } } }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDirA }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
+
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-a': { type: 'domain', description: 'Rule A', triggers: { prompt: { keywords: ['alpha'] } } } }
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDirA, { recursive: true, force: true });
-    fs.rmSync(tmpDirB, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness, [tmpDirB]); });
 
   it('request with env.CLAUDE_PROJECT_DIR switches project context per-request', async () => {
     const resA = await request('POST', '/activate', {
       prompt: 'alpha keyword',
-      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.ok(resA.body.hookSpecificOutput.additionalContext.includes('rule-a'));
 
@@ -367,17 +251,12 @@ describe('Cross-Project Env Switching', () => {
 });
 
 describe('Kill Switch', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   let testSqlFile;
   const PORT = 19755;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-killswitch-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -393,28 +272,13 @@ describe('Kill Switch', () => {
           }
         }
       }
-    }));
+    }, { env: { SKILL_ENGINE_OFF: '1' } });
 
-    testSqlFile = path.join(tmpDir, 'test.sql');
+    testSqlFile = path.join(harness.tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'SELECT 1');
-
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, SKILL_ENGINE_OFF: '1', CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('activate returns empty when SKILL_ENGINE_OFF=1', async () => {
     const res = await request('POST', '/activate', { prompt: 'anything matching block-rule' }, PORT);
@@ -430,17 +294,12 @@ describe('Kill Switch', () => {
 });
 
 describe('Pause / Resume', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   let testSqlFile;
   const PORT = 19756;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-pauseresume-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -461,28 +320,13 @@ describe('Pause / Resume', () => {
           triggers: { prompt: { keywords: ['activate-test'] } }
         }
       }
-    }));
+    });
 
-    testSqlFile = path.join(tmpDir, 'test.sql');
+    testSqlFile = path.join(harness.tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'SELECT 1');
-
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('POST /pause returns {paused: true} with status 200', async () => {
     const res = await request('POST', '/pause', null, PORT);
@@ -538,17 +382,12 @@ describe('Pause / Resume', () => {
 });
 
 describe('Tool Name Filtering', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   let testSqlFile;
   const PORT = 19757;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-toolname-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -576,28 +415,13 @@ describe('Tool Name Filtering', () => {
           }
         }
       }
-    }));
+    });
 
-    testSqlFile = path.join(tmpDir, 'test.sql');
+    testSqlFile = path.join(harness.tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'SELECT 1');
-
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('blocks when tool_name matches rule toolNames', async () => {
     const res = await request('POST', '/enforce', {
@@ -619,7 +443,7 @@ describe('Tool Name Filtering', () => {
   });
 
   it('enforces rule without toolNames for any tool_name', async () => {
-    const configFile = path.join(tmpDir, 'app.config');
+    const configFile = path.join(harness.tmpDir, 'app.config');
     fs.writeFileSync(configFile, '<configuration />');
     const res = await request('POST', '/enforce', {
       tool_name: 'Write',
@@ -630,7 +454,7 @@ describe('Tool Name Filtering', () => {
   });
 
   it('enforces rule without toolNames even when tool_name is absent', async () => {
-    const configFile = path.join(tmpDir, 'app.config');
+    const configFile = path.join(harness.tmpDir, 'app.config');
     fs.writeFileSync(configFile, '<configuration />');
     const res = await request('POST', '/enforce', {
       tool_input: { file_path: configFile }
@@ -641,16 +465,11 @@ describe('Tool Name Filtering', () => {
 });
 
 describe('Enforce-Tool Endpoint', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19759;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-enforce-tool-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -680,24 +499,10 @@ describe('Enforce-Tool Endpoint', () => {
           }
         }
       }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('blocks matching tool input pattern', async () => {
     const res = await request('POST', '/enforce-tool', {
@@ -761,16 +566,11 @@ describe('Enforce-Tool Endpoint', () => {
 });
 
 describe('Enforce-Tool Short-Circuit', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19760;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-enforce-tool-sc-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -781,24 +581,10 @@ describe('Enforce-Tool Short-Circuit', () => {
           triggers: { file: { pathPatterns: ['**/*.sql'] } }
         }
       }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('returns empty immediately when no tool trigger rules exist', async () => {
     const res = await request('POST', '/enforce-tool', {
@@ -818,16 +604,11 @@ describe('Enforce-Tool Short-Circuit', () => {
 });
 
 describe('Post-Tool Endpoint', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19761;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-post-tool-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -859,24 +640,10 @@ describe('Post-Tool Endpoint', () => {
           }
         }
       }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('injects guidance for matching tool output', async () => {
     const res = await request('POST', '/post-tool', {
@@ -934,16 +701,11 @@ describe('Post-Tool Endpoint', () => {
 });
 
 describe('Stop Endpoint', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19762;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-stop-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -967,24 +729,10 @@ describe('Stop Endpoint', () => {
           triggers: {}
         }
       }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('fires Stop rules and injects guidance', async () => {
     const res = await request('POST', '/stop', { session_id: 'stop-test-1' }, PORT);
@@ -1019,21 +767,25 @@ describe('Stop Endpoint', () => {
 });
 
 describe('Cross-Repo Rule Isolation', () => {
-  let serverProcess;
-  let tmpDirA;
+  let harness;
   let tmpDirB;
-  let rulesDirA;
   let rulesDirB;
   let testFileB;
   const PORT = 19763;
 
   before(async () => {
-    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-repoA-'));
     tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-repoB-'));
-    rulesDirA = path.join(tmpDirA, '.claude', 'skills');
     rulesDirB = path.join(tmpDirB, '.claude', 'skills');
-    fs.mkdirSync(rulesDirA, { recursive: true });
     fs.mkdirSync(rulesDirB, { recursive: true });
+
+    // We need tmpDirA's path to set sourceRepo, but startTestServer creates it.
+    // So we create tmpDirA manually first to know its path, then pass it as a constraint.
+    // Actually, we can start the server first, then write the rules with the known path.
+    // But the harness writes rules before spawning. So we need to create a tmpDir ourselves
+    // to know the normalized path for sourceRepo.
+    const tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-repoA-'));
+    const rulesDirA = path.join(tmpDirA, '.claude', 'skills');
+    fs.mkdirSync(rulesDirA, { recursive: true });
 
     const normalizedA = tmpDirA.replace(/\\/g, '/');
 
@@ -1086,8 +838,10 @@ describe('Cross-Repo Rule Isolation', () => {
     testFileB = path.join(pipelineDir, 'config.json');
     fs.writeFileSync(testFileB, '{}');
 
-    // Start server with default project A
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+    // Start server with default project A — we need to use the manually created tmpDirA
+    const { spawn } = require('child_process');
+    const SERVER_PATH = path.resolve(__dirname, '..', 'server', 'server.js');
+    const serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
       stdio: 'pipe',
       env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDirA }
     });
@@ -1098,22 +852,20 @@ describe('Cross-Repo Rule Isolation', () => {
       });
       serverProcess.on('error', reject);
     });
+
+    harness = { tmpDir: tmpDirA, rulesDir: rulesDirA, serverProcess, port: PORT };
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDirA, { recursive: true, force: true });
-    fs.rmSync(tmpDirB, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness, [tmpDirB]); });
 
   it('rule with matching sourceRepo fires when request targets that repo', async () => {
-    const fileInA = path.join(tmpDirA, 'pipeline', 'config.json');
+    const fileInA = path.join(harness.tmpDir, 'pipeline', 'config.json');
     const dirA = path.dirname(fileInA);
     if (!fs.existsSync(dirA)) fs.mkdirSync(dirA, { recursive: true });
     fs.writeFileSync(fileInA, '{}');
     const res = await request('POST', '/enforce', {
       tool_input: { file_path: fileInA },
-      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.equal(res.status, 200);
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
@@ -1171,10 +923,10 @@ describe('Cross-Repo Rule Isolation', () => {
   });
 
   it('switching env back to repo A re-enables scoped rules', async () => {
-    const fileInA = path.join(tmpDirA, 'pipeline', 'config.json');
+    const fileInA = path.join(harness.tmpDir, 'pipeline', 'config.json');
     const res = await request('POST', '/enforce', {
       tool_input: { file_path: fileInA },
-      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.equal(res.status, 200);
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
@@ -1183,54 +935,35 @@ describe('Cross-Repo Rule Isolation', () => {
 });
 
 describe('Pre-Write Endpoint — Task Safety', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19764;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-prewrite-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
-    }));
-    // Write a safety-rules.json in the project dir
-    const claudeDir = path.join(tmpDir, '.claude');
-    fs.writeFileSync(path.join(claudeDir, 'safety-rules.json'), JSON.stringify({
-      prodFactories: ['prd'],
-      prodConnections: ['prd', 'ferconlineprod'],
-      prodEnvironments: ['spprod', 'PRODSPO'],
-      prodDeployStepTypes: ['adf-deploy-pipeline', 'adf-run-pipeline'],
-      prodMutationStepTypes: ['sql-deploy-sp'],
-      prodUriPatterns: ['ferc.crm9.dynamics.com'],
-      devRevertAllowedFactories: ['dev1'],
-      blockedExportBranches: ['main', 'master'],
-      readOnlyStepTypes: ['sql-query', 'adf-pull'],
-      prodUriRegex: 'ferc\\.crm9',
-      prodNameRegex: '\\bprod\\b|PRODSPO|spprod'
-    }));
-
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
+    }, {
+      extraFiles: {
+        '.claude/safety-rules.json': JSON.stringify({
+          prodFactories: ['prd'],
+          prodConnections: ['prd', 'ferconlineprod'],
+          prodEnvironments: ['spprod', 'PRODSPO'],
+          prodDeployStepTypes: ['adf-deploy-pipeline', 'adf-run-pipeline'],
+          prodMutationStepTypes: ['sql-deploy-sp'],
+          prodUriPatterns: ['ferc.crm9.dynamics.com'],
+          devRevertAllowedFactories: ['dev1'],
+          blockedExportBranches: ['main', 'master'],
+          readOnlyStepTypes: ['sql-query', 'adf-pull'],
+          prodUriRegex: 'ferc\\.crm9',
+          prodNameRegex: '\\bprod\\b|PRODSPO|spprod'
+        })
+      }
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('allows non-task file paths (fast exit)', async () => {
-    const filePath = path.join(tmpDir, 'README.md').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'README.md').replace(/\\/g, '/');
     const res = await request('POST', '/pre-write', {
       tool_input: { file_path: filePath, content: 'hello' }
     }, PORT);
@@ -1239,7 +972,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('denies task file targeting production factory', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'deploy.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'deploy.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'adf-deploy-pipeline', factory: 'prd', pipeline: 'SomePipeline' }]
     });
@@ -1252,7 +985,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('denies task file targeting production environment', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'test.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'test.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'dataverse-delete', environment: 'spprod' }]
     });
@@ -1265,7 +998,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('denies task file targeting production connection with mutation', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'sp.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'sp.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'sql-deploy-sp', connection: 'prd', sp: 'p_Test' }]
     });
@@ -1278,7 +1011,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('asks for read-only sql-query on production connection', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'query.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'query.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'sql-query', connection: 'prd', sql: 'SELECT TOP 10 * FROM Users' }]
     });
@@ -1290,7 +1023,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('denies sql-query with DML on production connection', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'dml.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'dml.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'sql-query', connection: 'prd', sql: 'DELETE FROM Users WHERE id=1' }]
     });
@@ -1303,7 +1036,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('allows task file with safe dev steps', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'safe.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'safe.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'adf-deploy-pipeline', factory: 'dev1', pipeline: 'TestPipeline' }]
     });
@@ -1315,7 +1048,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('allows read-only step types targeting prod (skipped by readOnlyStepTypes)', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'pull.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'pull.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'adf-pull', factory: 'prd' }]
     });
@@ -1327,7 +1060,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('denies work-repo-export targeting blocked branch', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'export.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'export.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'work-repo-export', branch: 'main' }]
     });
@@ -1340,7 +1073,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('denies dev-revert on non-allowed factory', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'revert.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'revert.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'dev-revert', factory: 'prd' }]
     });
@@ -1353,7 +1086,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('allows malformed JSON in task content (fail-open)', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'bad.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'bad.json').replace(/\\/g, '/');
     const res = await request('POST', '/pre-write', {
       tool_input: { file_path: filePath, content: 'not valid json{' }
     }, PORT);
@@ -1363,7 +1096,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
 
   it('returns empty when paused', async () => {
     await request('POST', '/pause', null, PORT);
-    const filePath = path.join(tmpDir, 'tasks', 'prod.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'prod.json').replace(/\\/g, '/');
     const taskContent = JSON.stringify({
       steps: [{ type: 'adf-deploy-pipeline', factory: 'prd', pipeline: 'Nope' }]
     });
@@ -1376,7 +1109,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
   });
 
   it('returns X-Response-Time header', async () => {
-    const filePath = path.join(tmpDir, 'tasks', 'timing.json').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'tasks', 'timing.json').replace(/\\/g, '/');
     const res = await requestRaw('POST', '/pre-write', {
       tool_input: { file_path: filePath, content: '{}' }
     }, PORT);
@@ -1385,39 +1118,19 @@ describe('Pre-Write Endpoint — Task Safety', () => {
 });
 
 describe('Pre-Write Endpoint — Security Model Config', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   const PORT = 19765;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-prewrite-sec-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    fs.writeFileSync(path.join(rulesDir, 'skill-rules.json'), JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
-    }));
-
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
     });
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('allows correct prod org under prod environment', async () => {
-    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
     const content = "INSERT INTO config VALUES ('prod', 'PRODSPO', 'guid', 'https://ferc.crm9.dynamics.com')";
     const res = await request('POST', '/pre-write', {
       tool_input: { file_path: filePath, content }
@@ -1427,7 +1140,7 @@ describe('Pre-Write Endpoint — Security Model Config', () => {
   });
 
   it('denies prod org under wrong environment', async () => {
-    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
     const content = "INSERT INTO config VALUES ('dev', 'PRODSPO', 'guid', 'https://ferc.crm9.dynamics.com')";
     const res = await request('POST', '/pre-write', {
       tool_input: { file_path: filePath, content }
@@ -1438,7 +1151,7 @@ describe('Pre-Write Endpoint — Security Model Config', () => {
   });
 
   it('asks for prod org under dataqa (intentional override)', async () => {
-    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
     const content = "INSERT INTO config VALUES ('dataqa', 'spprod', 'guid', 'https://ferc.crm9.dynamics.com')";
     const res = await request('POST', '/pre-write', {
       tool_input: { file_path: filePath, content }
@@ -1449,7 +1162,7 @@ describe('Pre-Write Endpoint — Security Model Config', () => {
   });
 
   it('denies dev URI under prod environment', async () => {
-    const filePath = path.join(tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
+    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ADFCreateAndPopulateSecurityModelConfig.sql').replace(/\\/g, '/');
     const content = "INSERT INTO config VALUES ('prod', 'devorg', 'guid', 'https://almwave3.crm9.dynamics.com')";
     const res = await request('POST', '/pre-write', {
       tool_input: { file_path: filePath, content }
@@ -1461,18 +1174,12 @@ describe('Pre-Write Endpoint — Security Model Config', () => {
 });
 
 describe('Mtime-Based Auto-Reload', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
+  let harness;
   let rulesFile;
   const PORT = 19766;
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-mtime-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    rulesFile = path.join(rulesDir, 'skill-rules.json');
-    fs.writeFileSync(rulesFile, JSON.stringify({
+    harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: {
@@ -1482,30 +1189,17 @@ describe('Mtime-Based Auto-Reload', () => {
           triggers: { prompt: { keywords: ['old-mtime'] } }
         }
       }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
     });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
+    rulesFile = path.join(harness.rulesDir, 'skill-rules.json');
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness); });
 
   it('auto-detects rule changes via mtime without /reload', async () => {
     // 1. Verify old rule matches
     const before = await request('POST', '/activate', {
       prompt: 'old-mtime keyword here',
-      env: { CLAUDE_PROJECT_DIR: tmpDir }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.ok(before.body.hookSpecificOutput, 'old-rule should match before change');
     assert.ok(before.body.hookSpecificOutput.additionalContext.includes('old-rule'), 'should contain old-rule');
@@ -1529,14 +1223,14 @@ describe('Mtime-Based Auto-Reload', () => {
     // 4. Verify old rule no longer matches
     const oldCheck = await request('POST', '/activate', {
       prompt: 'old-mtime keyword here',
-      env: { CLAUDE_PROJECT_DIR: tmpDir }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.ok(!oldCheck.body.hookSpecificOutput, 'old-rule should not match after file change');
 
     // 5. Verify new rule matches
     const newCheck = await request('POST', '/activate', {
       prompt: 'new-mtime keyword here',
-      env: { CLAUDE_PROJECT_DIR: tmpDir }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.ok(newCheck.body.hookSpecificOutput, 'new-rule should match after file change');
     assert.ok(newCheck.body.hookSpecificOutput.additionalContext.includes('new-rule'), 'should contain new-rule');
@@ -1544,19 +1238,13 @@ describe('Mtime-Based Auto-Reload', () => {
 });
 
 describe('Project-Scoped Session State', () => {
-  let serverProcess;
-  let tmpDirA;
+  let harness;
   let tmpDirB;
-  let rulesDirA;
-  let rulesDirB;
   const PORT = 19767;
 
   before(async () => {
-    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-sessA-'));
     tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-sessB-'));
-    rulesDirA = path.join(tmpDirA, '.claude', 'skills');
-    rulesDirB = path.join(tmpDirB, '.claude', 'skills');
-    fs.mkdirSync(rulesDirA, { recursive: true });
+    const rulesDirB = path.join(tmpDirB, '.claude', 'skills');
     fs.mkdirSync(rulesDirB, { recursive: true });
 
     const sharedRules = {
@@ -1571,34 +1259,19 @@ describe('Project-Scoped Session State', () => {
         }
       }
     };
-    fs.writeFileSync(path.join(rulesDirA, 'skill-rules.json'), JSON.stringify(sharedRules));
     fs.writeFileSync(path.join(rulesDirB, 'skill-rules.json'), JSON.stringify(sharedRules));
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
-      stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDirA }
-    });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
+    harness = await startTestServer(PORT, sharedRules);
   });
 
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDirA, { recursive: true, force: true });
-    fs.rmSync(tmpDirB, { recursive: true, force: true });
-  });
+  after(() => { stopTestServer(harness, [tmpDirB]); });
 
   it('sessionOnce is scoped per project — same session_id fires in different projects', async () => {
     // 1. Fire rule in project A
     const firstA = await request('POST', '/activate', {
       prompt: 'session-test keyword',
       session_id: 'shared-sess',
-      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.ok(firstA.body.hookSpecificOutput, 'should fire in project A first time');
     assert.ok(firstA.body.hookSpecificOutput.additionalContext.includes('once-rule'));
@@ -1607,7 +1280,7 @@ describe('Project-Scoped Session State', () => {
     const secondA = await request('POST', '/activate', {
       prompt: 'session-test keyword',
       session_id: 'shared-sess',
-      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
     }, PORT);
     assert.ok(!secondA.body.hookSpecificOutput, 'should NOT fire in project A second time');
 
