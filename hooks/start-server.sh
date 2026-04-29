@@ -21,7 +21,25 @@ if [ -n "$HEALTH" ]; then
     exit 0
   fi
 
-  # Version mismatch — kill old server and start fresh
+  # Semver comparison: only upgrade, never downgrade.
+  # If the running server is newer than us, leave it alone.
+  _semver_newer() {
+    # Returns 0 (true) if $1 > $2 in semver
+    local IFS=.
+    local i a=($1) b=($2)
+    for ((i=0; i<3; i++)); do
+      local av="${a[i]:-0}" bv="${b[i]:-0}"
+      if (( av > bv )); then return 0; fi
+      if (( av < bv )); then return 1; fi
+    done
+    return 1  # equal
+  }
+
+  if [ -n "$RUNNING_VERSION" ] && [ -n "$CURRENT_VERSION" ] && _semver_newer "$RUNNING_VERSION" "$CURRENT_VERSION"; then
+    exit 0
+  fi
+
+  # Running version is older — kill and upgrade
   OLD_PID=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).pid||'')}catch{console.log('')}})" 2>/dev/null)
 
   # Cross-platform kill: POSIX kill doesn't work on Windows Node processes
