@@ -587,6 +587,21 @@ async function handleRequest(req, res) {
     });
   }
 
+  if (method === 'GET' && url === '/rules') {
+    const ctx = getRequestContext(null);
+    const rules = ctx.compiledRules.map(e => ({
+      name: e.name,
+      type: e.rule.type,
+      enforcement: getEnforcement(e.rule, ctx.rulesData.defaults),
+      priority: getPriority(e.rule, ctx.rulesData.defaults),
+      description: e.rule.description,
+      sourceRepo: e.sourceRepo || null,
+      triggers: Object.keys(e.rule.triggers || {}),
+      hookEvents: e.rule.hookEvents || null,
+    }));
+    return respond(res, 200, { projectDir: lastProjectDir, rulesDir: ctx.rulesDir, count: rules.length, rules });
+  }
+
   // Route table for POST handler endpoints
   const route = method === 'POST' && routes[url];
   if (route) {
