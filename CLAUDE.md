@@ -15,7 +15,8 @@ Server tests spawn real processes on ports 19751-19767. Ensure those ports are f
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/pause`, `/resume`
+- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/set-project`, `/pause`, `/resume`
+- `server/pre-write-safety.js` — production safety validation for task files and security model configs
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
 - `hooks/lib/learn.js` — rule/skill classification

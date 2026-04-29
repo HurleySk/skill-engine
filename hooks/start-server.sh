@@ -20,8 +20,10 @@ if [ -n "$HEALTH" ]; then
   # Tell the running server which project we're in (hooks don't carry env in payload)
   _set_project() {
     local PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+    local PAYLOAD
+    PAYLOAD=$(node -e "console.log(JSON.stringify({projectDir:process.argv[1]}))" "$PROJECT_DIR" 2>/dev/null)
     curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
-      -d "{\"projectDir\":\"$PROJECT_DIR\"}" \
+      -d "$PAYLOAD" \
       "http://localhost:$PORT/set-project" > /dev/null 2>&1
   }
 
