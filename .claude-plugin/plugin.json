@@ -1,6 +1,6 @@
 {
   "name": "skill-engine",
-  "version": "3.2.10",
+  "version": "3.3.0",
   "description": "Rule-based skill activation and guardrail enforcement for Claude Code. Uses a persistent HTTP server for near-zero latency on every tool call.",
   "author": {
     "name": "Samuel Hurley",
