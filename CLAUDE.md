@@ -10,12 +10,12 @@ No package.json. Tests use the Node.js built-in test runner:
 node --test tests/*.test.js
 ```
 
-Server tests spawn real processes on ports 19751-19763. Ensure those ports are free before running tests.
+Server tests spawn real processes on ports 19751-19767. Ensure those ports are free before running tests.
 
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/reload`, `/pause`, `/resume`
+- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/pause`, `/resume`
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
 - `hooks/lib/learn.js` — rule/skill classification
@@ -44,14 +44,14 @@ Multiple fix commits can precede a single `[release]` commit. Non-release pushes
 
 ## Cross-Repo Rule Scoping
 
-Learned rules are auto-stamped with `sourceRepo` (the normalized `CLAUDE_PROJECT_DIR` at learn time). At enforcement time, rules with a `sourceRepo` that doesn't match the server's current `PROJECT_ROOT` are skipped. Rules without `sourceRepo` are treated as global and match everywhere (backward compatible). The server derives `PROJECT_ROOT` from `RULES_DIR` by stripping `/.claude/skills`.
+Learned rules are auto-stamped with `sourceRepo` (the normalized `CLAUDE_PROJECT_DIR` at learn time). At enforcement time, each request derives its project root from `env.CLAUDE_PROJECT_DIR` (in the hook input) or `process.env.CLAUDE_PROJECT_DIR` (fallback). Rules with a `sourceRepo` that doesn't match the request's project root are skipped. Rules without `sourceRepo` are treated as global and match everywhere (backward compatible).
 
 ## Performance
 
 The server runs on mutation tool calls (`PreToolUse` for `Edit|Write|Bash|PowerShell|NotebookEdit`) and every prompt (`UserPromptSubmit`). Matchers in plugin.json filter read-only tools (Read, Grep, Glob, etc.) at the harness level before any HTTP call. All changes must be evaluated for latency impact:
 
-- Rules are pre-compiled at startup (regex patterns, keyword lowercase, toolNames Sets)
-- No per-request allocation or I/O beyond the rule evaluation itself
+- Rules are compiled on first access and cached; `fs.statSync` (~0.1ms) on each request checks if rule files changed
+- No recompilation unless file mtime actually changes
 - `/health` tracks `avgResponseTimeMs` — target is under 25ms per request
 
 ## Windows Compatibility
