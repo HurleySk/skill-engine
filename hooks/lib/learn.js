@@ -176,91 +176,112 @@ function promote(ruleName, fromPath, toPath) {
 module.exports = { validateRule, normalizeTriggerPaths, loadLearnedFile, add, list, remove, update, promote };
 
 if (require.main === module) {
-  const args = process.argv.slice(2);
-  const command = args[0];
-
-  // Parse --file flag
-  const fileIdx = args.indexOf('--file');
-  let filePath;
-  if (fileIdx !== -1 && args[fileIdx + 1]) {
-    filePath = args[fileIdx + 1];
-  } else {
-    // Default: find .claude/skills/ from cwd using rules-io's findRulesFile
-    const { findRulesFile } = require('./rules-io.js');
-    const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const rulesFile = findRulesFile(cwd);
-    if (rulesFile) {
-      filePath = path.join(path.dirname(rulesFile), 'learned-rules.json');
-    } else {
-      filePath = path.join(cwd, '.claude', 'skills', 'learned-rules.json');
-    }
+  function readStdin() {
+    return new Promise((resolve) => {
+      if (process.stdin.isTTY) return resolve(null);
+      let data = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => { data += chunk; });
+      process.stdin.on('end', () => resolve(data.trim() || null));
+    });
   }
 
-  if (command === 'add') {
-    const ruleName = args[1];
-    let ruleJson;
-    try {
-      ruleJson = JSON.parse(args[2]);
-    } catch {
-      process.stderr.write('Error: Invalid JSON for rule.\n');
-      process.exit(1);
+  function parseJsonArg(arg, stdin) {
+    if (arg) {
+      try { return JSON.parse(arg); } catch {}
     }
-    const result = add(ruleName, ruleJson, filePath);
-    if (result.ok) {
-      process.stdout.write(`Rule "${ruleName}" saved to ${filePath}\n`);
-    } else {
-      process.stderr.write(`Error: ${result.error}\n`);
-      process.exit(1);
+    if (stdin) {
+      try { return JSON.parse(stdin); } catch {}
     }
-  } else if (command === 'list') {
-    const result = list(filePath);
-    process.stdout.write(result.output + '\n');
-  } else if (command === 'remove') {
-    const ruleName = args[1];
-    const result = remove(ruleName, filePath);
-    if (result.ok) {
-      process.stdout.write(`Rule "${ruleName}" removed from ${filePath}\n`);
-    } else {
-      process.stderr.write(`Error: ${result.error}\n`);
-      process.exit(1);
-    }
-  } else if (command === 'update') {
-    const ruleName = args[1];
-    let updatesJson;
-    try {
-      updatesJson = JSON.parse(args[2]);
-    } catch {
-      process.stderr.write('Error: Invalid JSON for updates.\n');
-      process.exit(1);
-    }
-    const result = update(ruleName, updatesJson, filePath);
-    if (result.ok) {
-      process.stdout.write(`Rule "${ruleName}" updated in ${filePath}\n`);
-    } else {
-      process.stderr.write(`Error: ${result.error}\n`);
-      process.exit(1);
-    }
-  } else if (command === 'promote') {
-    const ruleName = args[1];
-    const toIdx = args.indexOf('--to');
-    let toPath;
-    if (toIdx !== -1 && args[toIdx + 1]) {
-      toPath = args[toIdx + 1];
+    return null;
+  }
+
+  async function main() {
+    const args = process.argv.slice(2);
+    const command = args[0];
+    const stdin = await readStdin();
+
+    // Parse --file flag
+    const fileIdx = args.indexOf('--file');
+    let filePath;
+    if (fileIdx !== -1 && args[fileIdx + 1]) {
+      filePath = args[fileIdx + 1];
     } else {
       const { findRulesFile } = require('./rules-io.js');
       const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
       const rulesFile = findRulesFile(cwd);
-      toPath = rulesFile || path.join(cwd, '.claude', 'skills', 'skill-rules.json');
+      if (rulesFile) {
+        filePath = path.join(path.dirname(rulesFile), 'learned-rules.json');
+      } else {
+        filePath = path.join(cwd, '.claude', 'skills', 'learned-rules.json');
+      }
     }
-    const result = promote(ruleName, filePath, toPath);
-    if (result.ok) {
-      process.stdout.write(`Rule "${ruleName}" promoted from ${filePath} to ${toPath}\n`);
+
+    if (command === 'add') {
+      const ruleName = args[1];
+      const ruleJson = parseJsonArg(args[2], stdin);
+      if (!ruleJson) {
+        process.stderr.write('Error: Invalid JSON for rule. Pass as argument or pipe via stdin.\n');
+        process.exit(1);
+      }
+      const result = add(ruleName, ruleJson, filePath);
+      if (result.ok) {
+        process.stdout.write(`Rule "${ruleName}" saved to ${filePath}\n`);
+      } else {
+        process.stderr.write(`Error: ${result.error}\n`);
+        process.exit(1);
+      }
+    } else if (command === 'list') {
+      const result = list(filePath);
+      process.stdout.write(result.output + '\n');
+    } else if (command === 'remove') {
+      const ruleName = args[1];
+      const result = remove(ruleName, filePath);
+      if (result.ok) {
+        process.stdout.write(`Rule "${ruleName}" removed from ${filePath}\n`);
+      } else {
+        process.stderr.write(`Error: ${result.error}\n`);
+        process.exit(1);
+      }
+    } else if (command === 'update') {
+      const ruleName = args[1];
+      const updatesJson = parseJsonArg(args[2], stdin);
+      if (!updatesJson) {
+        process.stderr.write('Error: Invalid JSON for updates. Pass as argument or pipe via stdin.\n');
+        process.exit(1);
+      }
+      const result = update(ruleName, updatesJson, filePath);
+      if (result.ok) {
+        process.stdout.write(`Rule "${ruleName}" updated in ${filePath}\n`);
+      } else {
+        process.stderr.write(`Error: ${result.error}\n`);
+        process.exit(1);
+      }
+    } else if (command === 'promote') {
+      const ruleName = args[1];
+      const toIdx = args.indexOf('--to');
+      let toPath;
+      if (toIdx !== -1 && args[toIdx + 1]) {
+        toPath = args[toIdx + 1];
+      } else {
+        const { findRulesFile } = require('./rules-io.js');
+        const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const rulesFile = findRulesFile(cwd);
+        toPath = rulesFile || path.join(cwd, '.claude', 'skills', 'skill-rules.json');
+      }
+      const result = promote(ruleName, filePath, toPath);
+      if (result.ok) {
+        process.stdout.write(`Rule "${ruleName}" promoted from ${filePath} to ${toPath}\n`);
+      } else {
+        process.stderr.write(`Error: ${result.error}\n`);
+        process.exit(1);
+      }
     } else {
-      process.stderr.write(`Error: ${result.error}\n`);
+      process.stderr.write('Usage: node learn.js <add|list|remove|update|promote> [args] [--file path]\n');
+      process.stderr.write('  JSON can be passed as argument or piped via stdin.\n');
       process.exit(1);
     }
-  } else {
-    process.stderr.write('Usage: node learn.js <add|list|remove|update|promote> [args] [--file path]\n');
-    process.exit(1);
   }
+
+  main();
 }
