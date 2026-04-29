@@ -9,31 +9,20 @@ const libDir = path.resolve(__dirname, '..', 'hooks', 'lib');
 const { normalizePath, globToRegex, matchPath } = require(path.join(libDir, 'glob-match'));
 const { loadRules, findRulesFile, findLearnedRulesFile } = require(path.join(libDir, 'rules-io'));
 
-// --- CLI args ---
-const args = process.argv.slice(2);
-function argVal(name) {
-  const idx = args.indexOf(name);
-  return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
-}
-const PORT = parseInt(argVal('--port') || process.env.SKILL_ENGINE_PORT || '19750', 10);
-let RULES_DIR = argVal('--rules-dir') || null;
-let PROJECT_ROOT = null;
-
-function deriveProjectRoot(rulesDir) {
-  if (!rulesDir) return null;
-  const normalized = normalizePath(rulesDir);
-  const suffix = '/.claude/skills';
-  if (normalized.endsWith(suffix)) return normalized.slice(0, -suffix.length);
-  return normalizePath(path.dirname(path.dirname(rulesDir)));
-}
+// --- CLI args (keep --port for tests) ---
+const PORT = (() => {
+  const idx = process.argv.indexOf('--port');
+  if (idx !== -1 && process.argv[idx + 1]) return parseInt(process.argv[idx + 1], 10);
+  return parseInt(process.env.SKILL_ENGINE_PORT || '19750', 10);
+})();
 
 const IS_WIN = process.platform === 'win32';
 
-function ruleMatchesProject(entry) {
+function ruleMatchesProject(entry, projectRoot) {
   if (!entry.sourceRepo) return true;
-  if (!PROJECT_ROOT) return true;
-  if (IS_WIN) return entry.sourceRepo.toLowerCase() === PROJECT_ROOT.toLowerCase();
-  return entry.sourceRepo === PROJECT_ROOT;
+  if (!projectRoot) return true;
+  if (IS_WIN) return entry.sourceRepo.toLowerCase() === projectRoot.toLowerCase();
+  return entry.sourceRepo === projectRoot;
 }
 
 // --- Version from plugin.json (read once at startup) ---
@@ -56,13 +45,126 @@ function getEnforcement(rule, defaults) {
   return rule.enforcement || (defaults && defaults.enforcement) || 'suggest';
 }
 
-// --- Pre-compiled rule cache ---
-let rulesData = null;     // merged { version, defaults, rules }
-let compiledRules = [];   // [{ name, rule, intentRe[], keywordsLower[], pathRe[], exclRe[], contentRe[] }]
-let hasToolTriggerRules = false;
-let hasOutputTriggerRules = false;
-let hasStopRules = false;
+// --- RuleCache class (mtime-based, stateless per-request) ---
+class RuleCache {
+  constructor() {
+    this._rulesDir = null;
+    this._mainMtime = null;
+    this._learnedMtime = null;
+    this._compiledRules = [];
+    this._rulesData = null;
+    this._hasToolTriggerRules = false;
+    this._hasOutputTriggerRules = false;
+    this._hasStopRules = false;
+  }
 
+  _getMtime(filePath) {
+    try {
+      return fs.statSync(filePath).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
+  getRules(rulesDir) {
+    const mainFile = path.join(rulesDir, 'skill-rules.json');
+    const learnedFile = path.join(rulesDir, 'learned-rules.json');
+    const mainMtime = this._getMtime(mainFile);
+    const learnedMtime = this._getMtime(learnedFile);
+
+    // If same rulesDir and mtimes unchanged, return cached data
+    if (
+      rulesDir === this._rulesDir &&
+      mainMtime === this._mainMtime &&
+      learnedMtime === this._learnedMtime
+    ) {
+      return {
+        compiledRules: this._compiledRules,
+        rulesData: this._rulesData,
+        hasToolTriggerRules: this._hasToolTriggerRules,
+        hasOutputTriggerRules: this._hasOutputTriggerRules,
+        hasStopRules: this._hasStopRules,
+      };
+    }
+
+    // Recompile
+    const mainData = loadRules(mainFile);
+    const learnedData = loadRules(learnedFile);
+    let rulesData;
+    if (!mainData && !learnedData) {
+      rulesData = { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {} };
+    } else if (!mainData) {
+      rulesData = { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: learnedData.rules };
+    } else {
+      rulesData = { ...mainData };
+      if (learnedData) {
+        rulesData.rules = { ...learnedData.rules, ...mainData.rules };
+      }
+    }
+
+    const compiled = compileRules(rulesData);
+
+    // Compute tri-state flags
+    const hasToolTriggerRules = compiled.some(e => e.toolTriggerNamesSet || (e.inputRe && e.inputRe.length));
+    const hasOutputTriggerRules = compiled.some(e => e.outputToolNamesSet || (e.outputRe && e.outputRe.length));
+    const hasStopRules = compiled.some(e => e.hookEventsSet && e.hookEventsSet.has('Stop'));
+
+    // Cache
+    this._rulesDir = rulesDir;
+    this._mainMtime = mainMtime;
+    this._learnedMtime = learnedMtime;
+    this._compiledRules = compiled;
+    this._rulesData = rulesData;
+    this._hasToolTriggerRules = hasToolTriggerRules;
+    this._hasOutputTriggerRules = hasOutputTriggerRules;
+    this._hasStopRules = hasStopRules;
+
+    return {
+      compiledRules: compiled,
+      rulesData,
+      hasToolTriggerRules,
+      hasOutputTriggerRules,
+      hasStopRules,
+    };
+  }
+}
+
+const ruleCache = new RuleCache();
+
+// --- Per-request context helper ---
+function getRequestContext(input) {
+  // Extract CLAUDE_PROJECT_DIR from input.env (first) or process.env (fallback)
+  let projectDir = null;
+  if (input && input.env && input.env.CLAUDE_PROJECT_DIR) {
+    projectDir = input.env.CLAUDE_PROJECT_DIR;
+  } else if (process.env.CLAUDE_PROJECT_DIR) {
+    projectDir = process.env.CLAUDE_PROJECT_DIR;
+  }
+
+  if (!projectDir) {
+    // No project dir available — return empty context
+    return {
+      projectRoot: null,
+      rulesDir: null,
+      compiledRules: [],
+      rulesData: { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {} },
+      hasToolTriggerRules: false,
+      hasOutputTriggerRules: false,
+      hasStopRules: false,
+    };
+  }
+
+  const projectRoot = normalizePath(projectDir);
+  const rulesDir = projectRoot + '/.claude/skills';
+  const cached = ruleCache.getRules(rulesDir);
+  return {
+    projectRoot,
+    rulesDir,
+    ...cached,
+  };
+}
+
+// --- Pre-compiled rule compiler ---
 function compileRules(data) {
   if (!data || !data.rules) return [];
   const compiled = [];
@@ -115,48 +217,19 @@ function compileRules(data) {
     compiled.push(entry);
   }
 
-  hasToolTriggerRules = compiled.some(e => e.toolTriggerNamesSet || (e.inputRe && e.inputRe.length));
-  hasOutputTriggerRules = compiled.some(e => e.outputToolNamesSet || (e.outputRe && e.outputRe.length));
-  hasStopRules = compiled.some(e => e.hookEventsSet && e.hookEventsSet.has('Stop'));
-
   return compiled;
 }
 
-function loadAndCompile() {
-  PROJECT_ROOT = deriveProjectRoot(RULES_DIR);
-  let mainFile, learnedFile;
-  if (RULES_DIR) {
-    mainFile = path.join(RULES_DIR, 'skill-rules.json');
-    learnedFile = path.join(RULES_DIR, 'learned-rules.json');
-  } else {
-    mainFile = findRulesFile(process.cwd());
-    learnedFile = findLearnedRulesFile(process.cwd());
-  }
-  const mainData = loadRules(mainFile);
-  const learnedData = loadRules(learnedFile);
-  if (!mainData && !learnedData) {
-    rulesData = { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {} };
-  } else if (!mainData) {
-    rulesData = { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: learnedData.rules };
-  } else {
-    rulesData = { ...mainData };
-    if (learnedData) {
-      rulesData.rules = { ...learnedData.rules, ...mainData.rules };
-    }
-  }
-  compiledRules = compileRules(rulesData);
-  return compiledRules.length;
-}
+// --- Session tracking (keyed by sessionId + '|' + projectRoot) ---
+const sessions = new Map();
 
-// --- Session tracking ---
-const sessions = new Map(); // sessionId -> { firedRules: Set, lastSeen: number }
-
-function getSession(sessionId) {
+function getSession(sessionId, projectRoot) {
   if (!sessionId) return null;
-  let s = sessions.get(sessionId);
+  const key = sessionId + '|' + (projectRoot || '');
+  let s = sessions.get(key);
   if (!s) {
     s = { firedRules: new Set(), lastSeen: Date.now() };
-    sessions.set(sessionId, s);
+    sessions.set(key, s);
   }
   s.lastSeen = Date.now();
   return s;
@@ -193,14 +266,14 @@ function matchPromptCompiled(prompt, entry) {
   return false;
 }
 
-function matchFileCompiled(filePath, entry) {
+function matchFileCompiled(filePath, entry, projectRoot, rulesData) {
   let normalized = normalizePath(filePath);
   // Strip project root to get relative path for glob matching
-  if (PROJECT_ROOT) {
-    const root = IS_WIN ? PROJECT_ROOT.toLowerCase() : PROJECT_ROOT;
+  if (projectRoot) {
+    const root = IS_WIN ? projectRoot.toLowerCase() : projectRoot;
     const test = IS_WIN ? normalized.toLowerCase() : normalized;
     if (test.startsWith(root + '/')) {
-      normalized = normalized.slice(PROJECT_ROOT.length + 1);
+      normalized = normalized.slice(projectRoot.length + 1);
     }
   }
   if (entry.exclRe && entry.exclRe.some(re => re.test(normalized))) return false;
@@ -222,16 +295,17 @@ function handleActivate(input) {
   const prompt = input && input.prompt;
   if (!prompt) return {};
 
-  const session = getSession(input.session_id);
+  const ctx = getRequestContext(input);
+  const session = getSession(input.session_id, ctx.projectRoot);
   const matches = [];
 
-  for (const entry of compiledRules) {
-    if (!ruleMatchesProject(entry)) continue;
+  for (const entry of ctx.compiledRules) {
+    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (!entry.keywordsLower && !entry.intentRe) continue;
     if (!matchPromptCompiled(prompt, entry)) continue;
-    const priority = getPriority(entry.rule, rulesData.defaults);
-    const enforcement = getEnforcement(entry.rule, rulesData.defaults);
+    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
+    const enforcement = getEnforcement(entry.rule, ctx.rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
   }
 
@@ -250,14 +324,14 @@ function handleActivate(input) {
 
   const count = matches.length;
   const lines = [
-    '\u26A1 Skill Engine \u2014 ' + count + ' relevant skill' + (count > 1 ? 's' : '') + ' detected:',
+    '⚡ Skill Engine — ' + count + ' relevant skill' + (count > 1 ? 's' : '') + ' detected:',
     ''
   ];
   for (const m of matches) {
     const typeLabel = m.rule.type === 'guardrail' ? ' (guardrail)' : '';
     lines.push('[' + m.priority.toUpperCase() + '] ' + m.name + typeLabel);
     lines.push('  ' + m.rule.description);
-    if (m.rule.skillPath) lines.push('  \u2192 Read: ' + m.rule.skillPath);
+    if (m.rule.skillPath) lines.push('  → Read: ' + m.rule.skillPath);
     lines.push('');
   }
   return {
@@ -271,26 +345,27 @@ function handleActivate(input) {
 // --- Enforce-tool handler (PreToolUse for any tool) ---
 function handleEnforceTool(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  if (!hasToolTriggerRules) return {};
+  const ctx = getRequestContext(input);
+  if (!ctx.hasToolTriggerRules) return {};
   const toolName = input && input.tool_name;
   const toolInput = input && input.tool_input;
   if (!toolName && !toolInput) return {};
 
   const inputStr = toolInput ? JSON.stringify(toolInput) : '';
-  const session = getSession(input.session_id);
+  const session = getSession(input.session_id, ctx.projectRoot);
   const matches = [];
 
-  for (const entry of compiledRules) {
-    if (!ruleMatchesProject(entry)) continue;
+  for (const entry of ctx.compiledRules) {
+    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) continue;
     if (entry.rule.type !== 'guardrail') continue;
-    const enforcement = getEnforcement(entry.rule, rulesData.defaults);
+    const enforcement = getEnforcement(entry.rule, ctx.rulesData.defaults);
     if (enforcement !== 'block' && enforcement !== 'warn') continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) continue;
     if (entry.toolTriggerNamesSet && !toolName) continue;
     if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) continue;
-    const priority = getPriority(entry.rule, rulesData.defaults);
+    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
   }
 
@@ -316,7 +391,7 @@ function handleEnforceTool(input) {
 
   const warnings = matches
     .filter(m => m.enforcement === 'warn')
-    .map(m => '\u26A0\uFE0F ' + m.name + ': ' + m.rule.description);
+    .map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
   const joined = warnings.join('\n');
   if (joined) {
     return {
@@ -333,22 +408,23 @@ function handleEnforceTool(input) {
 // --- Post-tool handler (PostToolUse) ---
 function handlePostTool(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  if (!hasOutputTriggerRules) return {};
+  const ctx = getRequestContext(input);
+  if (!ctx.hasOutputTriggerRules) return {};
   const toolName = input && input.tool_name;
   const toolOutput = input && input.tool_output;
 
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
-  const session = getSession(input && input.session_id);
+  const session = getSession(input && input.session_id, ctx.projectRoot);
   const matches = [];
 
-  for (const entry of compiledRules) {
-    if (!ruleMatchesProject(entry)) continue;
+  for (const entry of ctx.compiledRules) {
+    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
     if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) continue;
     if (entry.outputToolNamesSet && !toolName) continue;
     if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) continue;
-    const priority = getPriority(entry.rule, rulesData.defaults);
+    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority });
   }
 
@@ -376,16 +452,17 @@ function handlePostTool(input) {
 // --- Stop handler ---
 function handleStop(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  if (!hasStopRules) return {};
+  const ctx = getRequestContext(input);
+  if (!ctx.hasStopRules) return {};
 
-  const session = getSession(input && input.session_id);
+  const session = getSession(input && input.session_id, ctx.projectRoot);
   const matches = [];
 
-  for (const entry of compiledRules) {
-    if (!ruleMatchesProject(entry)) continue;
+  for (const entry of ctx.compiledRules) {
+    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
     if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
-    const priority = getPriority(entry.rule, rulesData.defaults);
+    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority });
   }
 
@@ -418,25 +495,26 @@ function handleEnforce(input) {
   const toolName = input && input.tool_name;
   const writeContent = input && input.tool_input && (input.tool_input.content || input.tool_input.new_string || '');
 
-  const session = getSession(input.session_id);
+  const ctx = getRequestContext(input);
+  const session = getSession(input.session_id, ctx.projectRoot);
   const matches = [];
 
-  for (const entry of compiledRules) {
-    if (!ruleMatchesProject(entry)) continue;
+  for (const entry of ctx.compiledRules) {
+    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
     if (entry.rule.type !== 'guardrail') continue;
-    const enforcement = getEnforcement(entry.rule, rulesData.defaults);
+    const enforcement = getEnforcement(entry.rule, ctx.rulesData.defaults);
     if (enforcement !== 'block' && enforcement !== 'warn') continue;
     if (!entry.pathRe || !entry.pathRe.length) continue;
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) continue;
-    if (!matchFileCompiled(filePath, entry)) continue;
+    if (!matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData)) continue;
     // Check content patterns against the content being written
     if (entry.contentRe && entry.contentRe.length > 0) {
       if (!writeContent) continue;
       const contentMatched = entry.contentRe.some(re => re.test(writeContent));
       if (!contentMatched) continue;
     }
-    const priority = getPriority(entry.rule, rulesData.defaults);
+    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
   }
 
@@ -462,7 +540,7 @@ function handleEnforce(input) {
 
   const warnings = matches
     .filter(m => m.enforcement === 'warn')
-    .map(m => '\u26A0\uFE0F ' + m.name + ': ' + m.rule.description);
+    .map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
   const joined = warnings.join('\n');
   if (joined) {
     return {
@@ -687,10 +765,9 @@ function handlePreWrite(input) {
   const normalized = normalizePath(filePath);
 
   // Get relative path by stripping up to the project dir
-  // We look for common project root markers and take the rest
+  const ctx = getRequestContext(input);
   let relPath = normalized;
-  // Try to get relative path from PROJECT_ROOT (derived from RULES_DIR)
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || PROJECT_ROOT;
+  const projectDir = ctx.projectRoot;
   if (projectDir) {
     const normalizedRoot = normalizePath(projectDir);
     if (normalized.startsWith(normalizedRoot + '/')) {
@@ -737,6 +814,16 @@ let eventsProcessed = 0;
 let lastEvent = null;
 let paused = false;
 
+// --- Route table ---
+const routes = {
+  '/activate':     { handler: handleActivate,    event: 'activate' },
+  '/enforce':      { handler: handleEnforce,     event: 'enforce' },
+  '/enforce-tool': { handler: handleEnforceTool, event: 'enforce-tool' },
+  '/post-tool':    { handler: handlePostTool,    event: 'post-tool' },
+  '/pre-write':    { handler: handlePreWrite,    event: 'pre-write' },
+  '/stop':         { handler: handleStop,        event: 'stop' },
+};
+
 // --- Request router ---
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -769,6 +856,7 @@ async function handleRequest(req, res) {
   const startNs = process.hrtime.bigint();
 
   if (method === 'GET' && url === '/health') {
+    const ctx = getRequestContext(null);
     const avgMs = timedResponses > 0
       ? Number(totalResponseTimeNs / BigInt(timedResponses)) / 1e6
       : 0;
@@ -776,27 +864,29 @@ async function handleRequest(req, res) {
       version: SERVER_VERSION,
       pid: process.pid,
       uptime: process.uptime(),
-      rulesLoaded: compiledRules.length,
+      rulesLoaded: ctx.compiledRules.length,
       port: PORT,
       lastEvent,
       eventsProcessed,
       activeSessions: sessions.size,
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
-      rulesDir: RULES_DIR || null,
-      projectRoot: PROJECT_ROOT || null,
-      hasToolTriggerRules,
-      hasOutputTriggerRules,
-      hasStopRules,
+      rulesDir: ctx.rulesDir || null,
+      projectRoot: ctx.projectRoot || null,
+      hasToolTriggerRules: ctx.hasToolTriggerRules,
+      hasOutputTriggerRules: ctx.hasOutputTriggerRules,
+      hasStopRules: ctx.hasStopRules,
     });
   }
 
-  if (method === 'POST' && url === '/activate') {
+  // Route table for POST handler endpoints
+  const route = method === 'POST' && routes[url];
+  if (route) {
     try {
       const body = await readBody(req);
       eventsProcessed++;
-      lastEvent = 'activate';
-      const result = handleActivate(body);
+      lastEvent = route.event;
+      const result = route.handler(body);
       const elapsed = process.hrtime.bigint() - startNs;
       totalResponseTimeNs += elapsed;
       timedResponses++;
@@ -805,100 +895,6 @@ async function handleRequest(req, res) {
     } catch {
       return respond(res, 400, { error: 'Invalid JSON' });
     }
-  }
-
-  if (method === 'POST' && url === '/enforce') {
-    try {
-      const body = await readBody(req);
-      eventsProcessed++;
-      lastEvent = 'enforce';
-      const result = handleEnforce(body);
-      const elapsed = process.hrtime.bigint() - startNs;
-      totalResponseTimeNs += elapsed;
-      timedResponses++;
-      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
-      return respond(res, 200, result);
-    } catch {
-      return respond(res, 400, { error: 'Invalid JSON' });
-    }
-  }
-
-  if (method === 'POST' && url === '/enforce-tool') {
-    try {
-      const body = await readBody(req);
-      eventsProcessed++;
-      lastEvent = 'enforce-tool';
-      const result = handleEnforceTool(body);
-      const elapsed = process.hrtime.bigint() - startNs;
-      totalResponseTimeNs += elapsed;
-      timedResponses++;
-      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
-      return respond(res, 200, result);
-    } catch {
-      return respond(res, 400, { error: 'Invalid JSON' });
-    }
-  }
-
-  if (method === 'POST' && url === '/post-tool') {
-    try {
-      const body = await readBody(req);
-      eventsProcessed++;
-      lastEvent = 'post-tool';
-      const result = handlePostTool(body);
-      const elapsed = process.hrtime.bigint() - startNs;
-      totalResponseTimeNs += elapsed;
-      timedResponses++;
-      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
-      return respond(res, 200, result);
-    } catch {
-      return respond(res, 400, { error: 'Invalid JSON' });
-    }
-  }
-
-  if (method === 'POST' && url === '/pre-write') {
-    try {
-      const body = await readBody(req);
-      eventsProcessed++;
-      lastEvent = 'pre-write';
-      const result = handlePreWrite(body);
-      const elapsed = process.hrtime.bigint() - startNs;
-      totalResponseTimeNs += elapsed;
-      timedResponses++;
-      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
-      return respond(res, 200, result);
-    } catch {
-      return respond(res, 400, { error: 'Invalid JSON' });
-    }
-  }
-
-  if (method === 'POST' && url === '/stop') {
-    try {
-      const body = await readBody(req);
-      eventsProcessed++;
-      lastEvent = 'stop';
-      const result = handleStop(body);
-      const elapsed = process.hrtime.bigint() - startNs;
-      totalResponseTimeNs += elapsed;
-      timedResponses++;
-      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
-      return respond(res, 200, result);
-    } catch {
-      return respond(res, 400, { error: 'Invalid JSON' });
-    }
-  }
-
-  if (method === 'POST' && url === '/reload') {
-    let body = null;
-    try { body = await readBody(req); } catch {}
-    if (body && body.rulesDir) {
-      RULES_DIR = body.rulesDir;
-    }
-    const count = loadAndCompile();
-    closeWatchers();
-    activeWatchers = watchRuleFiles();
-    eventsProcessed++;
-    lastEvent = 'reload';
-    return respond(res, 200, { reloaded: true, rulesLoaded: count, rulesDir: RULES_DIR || null });
   }
 
   if (method === 'POST' && url === '/pause') {
@@ -916,46 +912,7 @@ async function handleRequest(req, res) {
   respond(res, 404, { error: 'Not found' });
 }
 
-// --- File watching for hot-reload ---
-let activeWatchers = [];
-function closeWatchers() {
-  for (const w of activeWatchers) { try { w.close(); } catch {} }
-  activeWatchers = [];
-}
-function watchRuleFiles() {
-  const files = [];
-  if (RULES_DIR) {
-    files.push(path.join(RULES_DIR, 'skill-rules.json'));
-    files.push(path.join(RULES_DIR, 'learned-rules.json'));
-  } else {
-    const mf = findRulesFile(process.cwd());
-    if (mf) files.push(mf);
-    const lf = findLearnedRulesFile(process.cwd());
-    if (lf) files.push(lf);
-  }
-
-  const watchers = [];
-  let debounce = null;
-  for (const f of files) {
-    if (!fs.existsSync(f)) continue;
-    try {
-      const w = fs.watch(f, () => {
-        if (debounce) clearTimeout(debounce);
-        debounce = setTimeout(() => {
-          loadAndCompile();
-          debounce = null;
-        }, 200);
-      });
-      w.unref();
-      watchers.push(w);
-    } catch {}
-  }
-  return watchers;
-}
-
 // --- Start ---
-loadAndCompile();
-
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch(() => {
     if (!res.writableEnded) respond(res, 500, { error: 'Internal error' });
@@ -964,7 +921,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   process.stdout.write('skill-engine server listening on port ' + PORT + '\n');
-  activeWatchers = watchRuleFiles();
 });
 
 // Graceful shutdown
