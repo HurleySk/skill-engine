@@ -6,8 +6,8 @@ const path = require('path');
 
 // --- Shared utilities from rules-io.js / glob-match.js ---
 const libDir = path.resolve(__dirname, '..', 'hooks', 'lib');
-const { normalizePath, globToRegex, matchPath } = require(path.join(libDir, 'glob-match'));
-const { loadRules, findRulesFile, findLearnedRulesFile } = require(path.join(libDir, 'rules-io'));
+const { normalizePath, globToRegex } = require(path.join(libDir, 'glob-match'));
+const { loadRules } = require(path.join(libDir, 'rules-io'));
 
 // --- CLI args (keep --port for tests) ---
 const PORT = (() => {
@@ -67,6 +67,15 @@ class RuleCache {
   }
 
   getRules(rulesDir) {
+    if (!rulesDir) {
+      return {
+        compiledRules: [],
+        rulesData: { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {} },
+        hasToolTriggerRules: false,
+        hasOutputTriggerRules: false,
+        hasStopRules: false,
+      };
+    }
     const mainFile = path.join(rulesDir, 'skill-rules.json');
     const learnedFile = path.join(rulesDir, 'learned-rules.json');
     const mainMtime = this._getMtime(mainFile);
@@ -767,9 +776,10 @@ function handlePreWrite(input) {
   let relPath = normalized;
   const projectDir = ctx.projectRoot;
   if (projectDir) {
-    const normalizedRoot = normalizePath(projectDir);
-    if (normalized.startsWith(normalizedRoot + '/')) {
-      relPath = normalized.slice(normalizedRoot.length + 1);
+    const rootTest = IS_WIN ? projectDir.toLowerCase() : projectDir;
+    const pathTest = IS_WIN ? normalized.toLowerCase() : normalized;
+    if (pathTest.startsWith(rootTest + '/')) {
+      relPath = normalized.slice(projectDir.length + 1);
     }
   }
 
