@@ -17,14 +17,22 @@ if [ -n "$HEALTH" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(require('path').resolve(process.argv[1]),'utf8')).version||'')}catch{console.log('')}" "$SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null)
 
+  # Tell the running server which project we're in (hooks don't carry env in payload)
+  _set_project() {
+    local PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+    curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
+      -d "{\"projectDir\":\"$PROJECT_DIR\"}" \
+      "http://localhost:$PORT/set-project" > /dev/null 2>&1
+  }
+
   if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" = "$CURRENT_VERSION" ]; then
+    _set_project
     exit 0
   fi
 
   # Semver comparison: only upgrade, never downgrade.
   # If the running server is newer than us, leave it alone.
   _semver_newer() {
-    # Returns 0 (true) if $1 > $2 in semver
     local IFS=.
     local i a=($1) b=($2)
     for ((i=0; i<3; i++)); do
@@ -32,10 +40,11 @@ if [ -n "$HEALTH" ]; then
       if (( av > bv )); then return 0; fi
       if (( av < bv )); then return 1; fi
     done
-    return 1  # equal
+    return 1
   }
 
   if [ -n "$RUNNING_VERSION" ] && [ -n "$CURRENT_VERSION" ] && _semver_newer "$RUNNING_VERSION" "$CURRENT_VERSION"; then
+    _set_project
     exit 0
   fi
 

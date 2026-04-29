@@ -150,14 +150,16 @@ class RuleCache {
 
 const ruleCache = new RuleCache();
 
+// --- Project dir: updated by /set-project on each SessionStart ---
+let lastProjectDir = process.env.CLAUDE_PROJECT_DIR || null;
+
 // --- Per-request context helper ---
 function getRequestContext(input) {
-  // Extract CLAUDE_PROJECT_DIR from input.env (first) or process.env (fallback)
   let projectDir = null;
   if (input && input.env && input.env.CLAUDE_PROJECT_DIR) {
     projectDir = input.env.CLAUDE_PROJECT_DIR;
-  } else if (process.env.CLAUDE_PROJECT_DIR) {
-    projectDir = process.env.CLAUDE_PROJECT_DIR;
+  } else {
+    projectDir = lastProjectDir;
   }
 
   if (!projectDir) {
@@ -913,6 +915,16 @@ async function handleRequest(req, res) {
     } catch {
       return respond(res, 400, { error: 'Invalid JSON' });
     }
+  }
+
+  if (method === 'POST' && url === '/set-project') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (body && body.projectDir) {
+      lastProjectDir = body.projectDir;
+    }
+    const ctx = getRequestContext(null);
+    return respond(res, 200, { projectDir: lastProjectDir, rulesLoaded: ctx.compiledRules.length });
   }
 
   if (method === 'POST' && url === '/pause') {
