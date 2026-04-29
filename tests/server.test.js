@@ -1513,3 +1513,165 @@ describe('Pre-Write Endpoint — Security Model Config', () => {
     assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('Dev URI'));
   });
 });
+
+describe('Mtime-Based Auto-Reload', () => {
+  let serverProcess;
+  let tmpDir;
+  let rulesDir;
+  let rulesFile;
+  const PORT = 19766;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-mtime-'));
+    rulesDir = path.join(tmpDir, '.claude', 'skills');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    rulesFile = path.join(rulesDir, 'skill-rules.json');
+    fs.writeFileSync(rulesFile, JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'old-rule': {
+          type: 'domain',
+          description: 'Old rule',
+          triggers: { prompt: { keywords: ['old-mtime'] } }
+        }
+      }
+    }));
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('auto-detects rule changes via mtime without /reload', async () => {
+    // 1. Verify old rule matches
+    const before = await request('POST', '/activate', {
+      prompt: 'old-mtime keyword here',
+      env: { CLAUDE_PROJECT_DIR: tmpDir }
+    }, PORT);
+    assert.ok(before.body.hookSpecificOutput, 'old-rule should match before change');
+    assert.ok(before.body.hookSpecificOutput.additionalContext.includes('old-rule'), 'should contain old-rule');
+
+    // 2. Wait 1.1s for filesystem mtime resolution
+    await new Promise(resolve => setTimeout(resolve, 1100));
+
+    // 3. Overwrite rules file with new rule (NO /reload call)
+    fs.writeFileSync(rulesFile, JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'new-rule': {
+          type: 'domain',
+          description: 'New rule',
+          triggers: { prompt: { keywords: ['new-mtime'] } }
+        }
+      }
+    }));
+
+    // 4. Verify old rule no longer matches
+    const oldCheck = await request('POST', '/activate', {
+      prompt: 'old-mtime keyword here',
+      env: { CLAUDE_PROJECT_DIR: tmpDir }
+    }, PORT);
+    assert.ok(!oldCheck.body.hookSpecificOutput, 'old-rule should not match after file change');
+
+    // 5. Verify new rule matches
+    const newCheck = await request('POST', '/activate', {
+      prompt: 'new-mtime keyword here',
+      env: { CLAUDE_PROJECT_DIR: tmpDir }
+    }, PORT);
+    assert.ok(newCheck.body.hookSpecificOutput, 'new-rule should match after file change');
+    assert.ok(newCheck.body.hookSpecificOutput.additionalContext.includes('new-rule'), 'should contain new-rule');
+  });
+});
+
+describe('Project-Scoped Session State', () => {
+  let serverProcess;
+  let tmpDirA;
+  let tmpDirB;
+  let rulesDirA;
+  let rulesDirB;
+  const PORT = 19767;
+
+  before(async () => {
+    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-sessA-'));
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-sessB-'));
+    rulesDirA = path.join(tmpDirA, '.claude', 'skills');
+    rulesDirB = path.join(tmpDirB, '.claude', 'skills');
+    fs.mkdirSync(rulesDirA, { recursive: true });
+    fs.mkdirSync(rulesDirB, { recursive: true });
+
+    const sharedRules = {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'once-rule': {
+          type: 'domain',
+          description: 'Session-once rule',
+          triggers: { prompt: { keywords: ['session-test'] } },
+          skipConditions: { sessionOnce: true }
+        }
+      }
+    };
+    fs.writeFileSync(path.join(rulesDirA, 'skill-rules.json'), JSON.stringify(sharedRules));
+    fs.writeFileSync(path.join(rulesDirB, 'skill-rules.json'), JSON.stringify(sharedRules));
+
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDirA }
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
+      serverProcess.stdout.on('data', (data) => {
+        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
+      });
+      serverProcess.on('error', reject);
+    });
+  });
+
+  after(() => {
+    if (serverProcess) serverProcess.kill();
+    fs.rmSync(tmpDirA, { recursive: true, force: true });
+    fs.rmSync(tmpDirB, { recursive: true, force: true });
+  });
+
+  it('sessionOnce is scoped per project — same session_id fires in different projects', async () => {
+    // 1. Fire rule in project A
+    const firstA = await request('POST', '/activate', {
+      prompt: 'session-test keyword',
+      session_id: 'shared-sess',
+      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+    }, PORT);
+    assert.ok(firstA.body.hookSpecificOutput, 'should fire in project A first time');
+    assert.ok(firstA.body.hookSpecificOutput.additionalContext.includes('once-rule'));
+
+    // 2. Confirm it does NOT fire again in project A (sessionOnce)
+    const secondA = await request('POST', '/activate', {
+      prompt: 'session-test keyword',
+      session_id: 'shared-sess',
+      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+    }, PORT);
+    assert.ok(!secondA.body.hookSpecificOutput, 'should NOT fire in project A second time');
+
+    // 3. Fire same session_id but with project B — should fire because session key includes project
+    const firstB = await request('POST', '/activate', {
+      prompt: 'session-test keyword',
+      session_id: 'shared-sess',
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
+    assert.ok(firstB.body.hookSpecificOutput, 'should fire in project B (different project scope)');
+    assert.ok(firstB.body.hookSpecificOutput.additionalContext.includes('once-rule'));
+  });
+});
