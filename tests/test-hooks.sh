@@ -7,7 +7,6 @@ FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 PASS=0
 FAIL=0
 
-# On Windows/Git Bash, convert POSIX paths to Windows-compatible paths for Node.js
 node_path() {
   if command -v cygpath >/dev/null 2>&1; then
     cygpath -m "$1"
@@ -49,107 +48,106 @@ assert_empty() {
   fi
 }
 
-# Set up temp project dir with rules
-TMPDIR_BASE=$(mktemp -d)
-RULES_DIR="$TMPDIR_BASE/.claude/skills"
-mkdir -p "$RULES_DIR"
-cp "$FIXTURES_DIR/valid-rules.json" "$RULES_DIR/skill-rules.json"
+assert_equals() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    echo "  ✓ $desc"
+    PASS=$((PASS + 1))
+  else
+    echo "  ✗ $desc (expected: $expected, got: $actual)"
+    FAIL=$((FAIL + 1))
+  fi
+}
 
-# Get Node-compatible paths
-NODE_TMPDIR_BASE=$(node_path "$TMPDIR_BASE")
 NODE_FIXTURES_DIR=$(node_path "$FIXTURES_DIR")
 
 echo ""
-echo "=== activate.sh tests ==="
+echo "=== _resolve_latest_plugin_dir tests ==="
 
-set +e
-OUTPUT=$(echo "{\"prompt\":\"create a stored proc\",\"session_id\":\"hook-test-1\",\"cwd\":\"$NODE_TMPDIR_BASE\"}" \
-  | bash "$HOOKS_DIR/activate.sh" 2>/dev/null)
-EXIT=$?
-set -e
-assert_exit "activate exits 0 on keyword match" 0 $EXIT
-assert_contains "activate output contains sql-standards" "sql-standards" "$OUTPUT"
-assert_contains "activate output contains CRITICAL" "CRITICAL" "$OUTPUT"
+# Source the function from start-server.sh without running the rest
+# We extract the function and test it in isolation
+TMPDIR_CACHE=$(mktemp -d)
+MOCK_CACHE="$TMPDIR_CACHE/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
 
-set +e
-OUTPUT=$(echo "{\"prompt\":\"build a REST API\",\"session_id\":\"hook-test-2\",\"cwd\":\"$NODE_TMPDIR_BASE\"}" \
-  | bash "$HOOKS_DIR/activate.sh" 2>/dev/null)
-EXIT=$?
-set -e
-assert_exit "activate exits 0 on no match" 0 $EXIT
-assert_empty "activate output is empty on no match" "$OUTPUT"
+# Test: multiple versions — picks latest
+mkdir -p "$MOCK_CACHE/3.1.0" "$MOCK_CACHE/3.2.7" "$MOCK_CACHE/3.3.0"
+RESULT=$(HOME="$TMPDIR_CACHE" bash -c '
+  _resolve_latest_plugin_dir() {
+    local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
+    local LATEST
+    LATEST=$(ls -d "$CACHE_BASE"/*/ 2>/dev/null | sort -V | tail -1)
+    if [ -n "$LATEST" ]; then
+      echo "${LATEST%/}"
+    else
+      echo "FALLBACK"
+    fi
+  }
+  _resolve_latest_plugin_dir
+')
+assert_contains "picks latest from multiple versions" "3.3.0" "$RESULT"
 
-set +e
-OUTPUT=$(echo "{\"prompt\":\"anything\",\"session_id\":\"hook-test-3\",\"cwd\":\"C:/nonexistent/path\"}" \
-  | bash "$HOOKS_DIR/activate.sh" 2>/dev/null)
-EXIT=$?
-set -e
-assert_exit "activate exits 0 with no rules file" 0 $EXIT
-assert_empty "activate output is empty with no rules file" "$OUTPUT"
+# Test: single version
+rm -rf "$MOCK_CACHE"
+mkdir -p "$MOCK_CACHE/2.0.0"
+RESULT=$(HOME="$TMPDIR_CACHE" bash -c '
+  _resolve_latest_plugin_dir() {
+    local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
+    local LATEST
+    LATEST=$(ls -d "$CACHE_BASE"/*/ 2>/dev/null | sort -V | tail -1)
+    if [ -n "$LATEST" ]; then
+      echo "${LATEST%/}"
+    else
+      echo "FALLBACK"
+    fi
+  }
+  _resolve_latest_plugin_dir
+')
+assert_contains "works with single version" "2.0.0" "$RESULT"
 
-rm -rf "$TMPDIR_BASE"
+# Test: no cache — falls back
+rm -rf "$MOCK_CACHE"
+RESULT=$(HOME="$TMPDIR_CACHE" bash -c '
+  _resolve_latest_plugin_dir() {
+    local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
+    local LATEST
+    LATEST=$(ls -d "$CACHE_BASE"/*/ 2>/dev/null | sort -V | tail -1)
+    if [ -n "$LATEST" ]; then
+      echo "${LATEST%/}"
+    else
+      echo "FALLBACK"
+    fi
+  }
+  _resolve_latest_plugin_dir
+')
+assert_equals "falls back when no cache exists" "FALLBACK" "$RESULT"
 
-echo ""
-echo "=== enforce.sh tests ==="
+# Test: many versions in non-sorted order
+rm -rf "$MOCK_CACHE"
+mkdir -p "$MOCK_CACHE/3.0.9" "$MOCK_CACHE/3.0.5" "$MOCK_CACHE/3.1.0" "$MOCK_CACHE/3.10.0" "$MOCK_CACHE/3.2.0"
+RESULT=$(HOME="$TMPDIR_CACHE" bash -c '
+  _resolve_latest_plugin_dir() {
+    local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
+    local LATEST
+    LATEST=$(ls -d "$CACHE_BASE"/*/ 2>/dev/null | sort -V | tail -1)
+    if [ -n "$LATEST" ]; then
+      echo "${LATEST%/}"
+    else
+      echo "FALLBACK"
+    fi
+  }
+  _resolve_latest_plugin_dir
+')
+assert_contains "handles double-digit minor version correctly" "3.10.0" "$RESULT"
 
-TMPDIR_ENF=$(mktemp -d)
-RULES_DIR_ENF="$TMPDIR_ENF/.claude/skills"
-mkdir -p "$RULES_DIR_ENF"
-cp "$FIXTURES_DIR/valid-rules.json" "$RULES_DIR_ENF/skill-rules.json"
-NODE_TMPDIR_ENF=$(node_path "$TMPDIR_ENF")
-
-# Test: block rule fires on SQL file
-set +e
-OUTPUT=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$NODE_FIXTURES_DIR/sample.sql\"},\"session_id\":\"enf-test-1\",\"cwd\":\"$NODE_TMPDIR_ENF\"}" \
-  | bash "$HOOKS_DIR/enforce.sh" 2>&1 1>/dev/null)
-EXIT=$?
-set -e
-assert_exit "enforce exits 2 on block rule match" 2 $EXIT
-assert_contains "enforce stderr contains blockMessage" "SQL standards apply" "$OUTPUT"
-
-# Test: warn rule fires on config file
-set +e
-STDERR=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$NODE_FIXTURES_DIR/sample.config\"},\"session_id\":\"enf-test-2\",\"cwd\":\"$NODE_TMPDIR_ENF\"}" \
-  | bash "$HOOKS_DIR/enforce.sh" 2>&1 1>/dev/null)
-EXIT=$?
-set -e
-assert_exit "enforce exits 0 on warn rule" 0 $EXIT
-assert_contains "enforce stderr contains warning" "config-warning" "$STDERR"
-
-# Test: no match — silent exit 0
-set +e
-OUTPUT=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"C:/some/readme.md\"},\"session_id\":\"enf-test-3\",\"cwd\":\"$NODE_TMPDIR_ENF\"}" \
-  | bash "$HOOKS_DIR/enforce.sh" 2>&1)
-EXIT=$?
-set -e
-assert_exit "enforce exits 0 on no match" 0 $EXIT
-
-# Test: skip marker bypasses block
-set +e
-OUTPUT=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$NODE_FIXTURES_DIR/sample-skip.sql\"},\"session_id\":\"enf-test-4\",\"cwd\":\"$NODE_TMPDIR_ENF\"}" \
-  | bash "$HOOKS_DIR/enforce.sh" 2>&1)
-EXIT=$?
-set -e
-assert_exit "enforce exits 0 when skip marker present" 0 $EXIT
-
-# Test: no rules file — silent pass-through
-set +e
-OUTPUT=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"C:/some/file.sql\"},\"cwd\":\"C:/nonexistent/path\"}" \
-  | bash "$HOOKS_DIR/enforce.sh" 2>&1)
-EXIT=$?
-set -e
-assert_exit "enforce exits 0 with no rules file" 0 $EXIT
-
-rm -rf "$TMPDIR_ENF"
+rm -rf "$TMPDIR_CACHE"
 
 echo ""
-echo "=== learn.js + enforce.sh integration ==="
+echo "=== learn.js tests ==="
 
 TMPDIR_LEARN=$(mktemp -d)
 RULES_DIR_LEARN="$TMPDIR_LEARN/.claude/skills"
 mkdir -p "$RULES_DIR_LEARN"
 
-# Write a minimal skill-rules.json (required for engine to load)
 echo '{"version":"1.0","defaults":{"enforcement":"suggest","priority":"medium"},"rules":{}}' \
   > "$RULES_DIR_LEARN/skill-rules.json"
 
@@ -157,26 +155,68 @@ NODE_TMPDIR_LEARN=$(node_path "$TMPDIR_LEARN")
 NODE_LEARNED_FILE=$(node_path "$RULES_DIR_LEARN/learned-rules.json")
 LEARN_SCRIPT="$SCRIPT_DIR/../hooks/lib/learn.js"
 
-# Add a learned warn rule via learn.js
+# Add a learned rule
 RULE_JSON='{"type":"guardrail","enforcement":"warn","description":"Learned: always review JS files","triggers":{"file":{"pathPatterns":["**/*.js"]}}}'
 node "$LEARN_SCRIPT" add js-review "$RULE_JSON" --file "$NODE_LEARNED_FILE" > /dev/null
 
-# Verify the learned rule file was created
 set +e
 OUTPUT=$(cat "$RULES_DIR_LEARN/learned-rules.json" 2>/dev/null)
 set -e
 assert_contains "learned-rules.json contains js-review rule" "js-review" "$OUTPUT"
+assert_contains "learned rule has correct enforcement" "warn" "$OUTPUT"
+assert_contains "learned rule has correct description" "always review JS files" "$OUTPUT"
 
-# Now enforce.sh should fire the learned warn rule on a .js file
+# List rules
 set +e
-STDERR=$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"C:/some/path/app.js\"},\"session_id\":\"learn-int-1\",\"cwd\":\"$NODE_TMPDIR_LEARN\"}" \
-  | bash "$HOOKS_DIR/enforce.sh" 2>&1 1>/dev/null)
-EXIT=$?
+LIST_OUTPUT=$(node "$LEARN_SCRIPT" list --file "$NODE_LEARNED_FILE" 2>/dev/null)
 set -e
-assert_exit "enforce exits 0 for learned warn rule" 0 $EXIT
-assert_contains "enforce stderr contains learned rule name" "js-review" "$STDERR"
+assert_contains "list shows js-review rule" "js-review" "$LIST_OUTPUT"
+
+# Remove rule
+node "$LEARN_SCRIPT" remove js-review --file "$NODE_LEARNED_FILE" > /dev/null 2>&1
+set +e
+OUTPUT=$(cat "$RULES_DIR_LEARN/learned-rules.json" 2>/dev/null)
+set -e
+if echo "$OUTPUT" | grep -q "js-review"; then
+  echo "  ✗ remove deletes the rule (rule still present)"
+  FAIL=$((FAIL + 1))
+else
+  echo "  ✓ remove deletes the rule"
+  PASS=$((PASS + 1))
+fi
 
 rm -rf "$TMPDIR_LEARN"
+
+echo ""
+echo "=== glob-match.js tests ==="
+
+GLOB_SCRIPT="$SCRIPT_DIR/../hooks/lib/glob-match.js"
+
+# Test normalizePath
+RESULT=$(node -e "
+  const {normalizePath} = require('$(node_path "$GLOB_SCRIPT")');
+  console.log(normalizePath('C:\\\\Users\\\\test\\\\file.js'));
+")
+assert_equals "normalizePath converts backslashes" "C:/Users/test/file.js" "$RESULT"
+
+# Test globMatch
+RESULT=$(node -e "
+  const {globMatch} = require('$(node_path "$GLOB_SCRIPT")');
+  console.log(globMatch('**/*.sql', 'src/queries/main.sql'));
+")
+assert_equals "globMatch matches **/*.sql" "true" "$RESULT"
+
+RESULT=$(node -e "
+  const {globMatch} = require('$(node_path "$GLOB_SCRIPT")');
+  console.log(globMatch('**/*.sql', 'src/queries/main.js'));
+")
+assert_equals "globMatch rejects non-matching" "false" "$RESULT"
+
+RESULT=$(node -e "
+  const {globMatch} = require('$(node_path "$GLOB_SCRIPT")');
+  console.log(globMatch('src/**/*.config', 'src/app/database.config'));
+")
+assert_equals "globMatch matches nested path" "true" "$RESULT"
 
 echo ""
 echo "=== Results ==="

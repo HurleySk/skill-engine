@@ -9,13 +9,24 @@ fi
 
 PORT="${SKILL_ENGINE_PORT:-19750}"
 
+_resolve_latest_plugin_dir() {
+  local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
+  local LATEST
+  LATEST=$(ls -d "$CACHE_BASE"/*/ 2>/dev/null | sort -V | tail -1)
+  if [ -n "$LATEST" ]; then
+    echo "${LATEST%/}"
+  else
+    echo "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  fi
+}
+
 # Check if server is already running
 HEALTH=$(curl -s --max-time 1 "http://localhost:$PORT/health" 2>/dev/null)
 if [ -n "$HEALTH" ]; then
   # Server is running — check if version matches
   RUNNING_VERSION=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version||'')}catch{console.log('')}})" 2>/dev/null)
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(require('path').resolve(process.argv[1]),'utf8')).version||'')}catch{console.log('')}" "$SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null)
+  PLUGIN_DIR="$(_resolve_latest_plugin_dir)"
+  CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(require('path').resolve(process.argv[1]),'utf8')).version||'')}catch{console.log('')}" "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
 
   # Tell the running server which project we're in (hooks don't carry env in payload)
   _set_project() {
@@ -45,7 +56,13 @@ if [ -n "$HEALTH" ]; then
     return 1
   }
 
-  if [ -n "$RUNNING_VERSION" ] && [ -n "$CURRENT_VERSION" ] && _semver_newer "$RUNNING_VERSION" "$CURRENT_VERSION"; then
+  # Fail-safe: if we can't determine either version, don't kill the running server
+  if [ -z "$RUNNING_VERSION" ] || [ -z "$CURRENT_VERSION" ]; then
+    _set_project
+    exit 0
+  fi
+
+  if _semver_newer "$RUNNING_VERSION" "$CURRENT_VERSION"; then
     _set_project
     exit 0
   fi
@@ -77,9 +94,9 @@ if [ -n "$HEALTH" ]; then
   echo "skill-engine: restarted ($RUNNING_VERSION → $CURRENT_VERSION)"
 fi
 
-# Resolve plugin directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVER_JS="$SCRIPT_DIR/../server/server.js"
+# Resolve plugin directory — prefer latest cached version over BASH_SOURCE
+PLUGIN_DIR="${PLUGIN_DIR:-$(_resolve_latest_plugin_dir)}"
+SERVER_JS="$PLUGIN_DIR/server/server.js"
 
 if [ ! -f "$SERVER_JS" ]; then
   exit 0

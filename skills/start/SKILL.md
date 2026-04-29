@@ -7,6 +7,14 @@ description: Start or resume the skill-engine HTTP server. Detects version misma
 
 Start, resume, or restart the rule enforcement server.
 
+## Finding the Plugin Directory
+
+ALWAYS resolve the latest cached version. Never trust `CLAUDE_PLUGIN_ROOT` — it can point to a stale cache entry.
+
+```bash
+PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/ 2>/dev/null | sort -V | tail -1)
+```
+
 ## Steps
 
 1. Check if the server is running:
@@ -17,28 +25,18 @@ curl -s --max-time 2 http://localhost:${SKILL_ENGINE_PORT:-19750}/health
 
 2. **If running**, check for version mismatch:
 
-Compare the `version` field from the health response against the current plugin.json version:
+Read the `version` field from health. Read `PLUGIN_DIR/.claude-plugin/plugin.json` for the latest cached version.
 
-```bash
-node -e "console.log(JSON.parse(require('fs').readFileSync(process.env.CLAUDE_PLUGIN_ROOT + '/.claude-plugin/plugin.json', 'utf8')).version)" 2>/dev/null
-```
+**CRITICAL — upgrade only, never downgrade:** If the running version is NEWER than the cached version, the cache is stale. Tell the user "Server is already running a newer version" and leave it alone. Only restart if the cached version is strictly newer than the running version.
 
-If `CLAUDE_PLUGIN_ROOT` is not set, find the latest cached version:
-
-```bash
-ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/ 2>/dev/null | sort -V | tail -1
-```
-
-Then read `plugin.json` from that directory.
-
-3. **If running + version mismatch**, restart:
+3. **If running + cached version is newer**, restart:
 
 Kill the old server by PID (from the `pid` field in the health response), then start fresh:
 
 ```bash
 kill {pid}
 sleep 1
-bash "{plugin_dir}/hooks/start-server.sh"
+bash "$PLUGIN_DIR/hooks/start-server.sh"
 ```
 
 Re-check health and show status. Tell the user:
@@ -63,10 +61,9 @@ Re-check health and show status. Tell the user: "Skill Engine resumed."
 > - Events processed: {eventsProcessed}
 > - Active sessions: {activeSessions}
 
-6. **If not running** (connection refused), start the server:
+6. **If not running** (connection refused), start the server using the `PLUGIN_DIR` resolved above:
 
 ```bash
-PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/ 2>/dev/null | sort -V | tail -1)
 bash "$PLUGIN_DIR/hooks/start-server.sh"
 ```
 
