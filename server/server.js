@@ -508,11 +508,9 @@ function handleEnforce(input) {
     if (checkSkip(entry.name, entry.rule, session)) continue;
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) continue;
     if (!matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData)) continue;
-    // Check content patterns against the content being written
-    if (entry.contentRe && entry.contentRe.length > 0) {
-      if (!writeContent) continue;
-      const contentMatched = entry.contentRe.some(re => re.test(writeContent));
-      if (!contentMatched) continue;
+    // Check content patterns against the content being written (if provided)
+    if (writeContent && entry.contentRe && entry.contentRe.length > 0) {
+      if (!entry.contentRe.some(re => re.test(writeContent))) continue;
     }
     const priority = getPriority(entry.rule, ctx.rulesData.defaults);
     matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });

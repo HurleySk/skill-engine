@@ -61,7 +61,10 @@ describe('Server Health', () => {
       rules: { 'test-rule': { type: 'domain', description: 'Test rule',
         triggers: { prompt: { keywords: ['test-keyword'] } } } }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(TEST_PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(TEST_PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -144,7 +147,10 @@ describe('Activate Endpoint', () => {
         }
       }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -243,7 +249,10 @@ describe('Enforce Endpoint', () => {
     testSqlFile = path.join(tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'CREATE PROCEDURE [dbo].[Test]\nAS\nBEGIN\n  SELECT 1\nEND');
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -275,7 +284,7 @@ describe('Enforce Endpoint', () => {
     const hso = res.body.hookSpecificOutput;
     assert.equal(hso.hookEventName, 'PreToolUse');
     assert.equal(hso.permissionDecision, 'allow');
-    assert.ok(res.body.systemMessage.includes('warn-config'), 'systemMessage should mention warn-config');
+    assert.ok(hso.additionalContext.includes('warn-config'), 'additionalContext should mention warn-config');
   });
 
   it('returns empty for non-matching file', async () => {
@@ -294,91 +303,17 @@ describe('Enforce Endpoint', () => {
   });
 });
 
-describe('Reload Endpoint', () => {
-  let serverProcess;
-  let tmpDir;
-  let rulesDir;
-  let rulesFile;
-  const PORT = 19754;
-
-  before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-reload-'));
-    rulesDir = path.join(tmpDir, '.claude', 'skills');
-    fs.mkdirSync(rulesDir, { recursive: true });
-    rulesFile = path.join(rulesDir, 'skill-rules.json');
-    fs.writeFileSync(rulesFile, JSON.stringify({
-      version: '1.0',
-      defaults: { enforcement: 'suggest', priority: 'medium' },
-      rules: {
-        'old-rule': {
-          type: 'domain',
-          description: 'Old rule',
-          triggers: { prompt: { keywords: ['old'] } }
-        }
-      }
-    }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
-      serverProcess.stdout.on('data', (data) => {
-        if (data.toString().includes('listening')) { clearTimeout(timeout); resolve(); }
-      });
-      serverProcess.on('error', reject);
-    });
-  });
-
-  after(() => {
-    if (serverProcess) serverProcess.kill();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('POST /reload picks up new rules', async () => {
-    // 1. Verify old rule matches
-    const before = await request('POST', '/activate', { prompt: 'old keyword here' }, PORT);
-    assert.ok(before.body.hookSpecificOutput.additionalContext.includes('old-rule'), 'old-rule should match before reload');
-
-    // 2. Overwrite rules file with new rule
-    fs.writeFileSync(rulesFile, JSON.stringify({
-      version: '1.0',
-      defaults: { enforcement: 'suggest', priority: 'medium' },
-      rules: {
-        'new-rule': {
-          type: 'domain',
-          description: 'New rule',
-          triggers: { prompt: { keywords: ['new'] } }
-        }
-      }
-    }));
-
-    // 3. POST /reload
-    const reload = await request('POST', '/reload', null, PORT);
-    assert.equal(reload.status, 200);
-    assert.equal(reload.body.reloaded, true);
-    assert.equal(reload.body.rulesLoaded, 1);
-
-    // 4. Verify old rule no longer matches
-    const oldCheck = await request('POST', '/activate', { prompt: 'old keyword here' }, PORT);
-    assert.ok(!oldCheck.body.hookSpecificOutput, 'old-rule should not match after reload');
-
-    // 5. Verify new rule matches
-    const newCheck = await request('POST', '/activate', { prompt: 'new keyword here' }, PORT);
-    assert.ok(newCheck.body.hookSpecificOutput.additionalContext.includes('new-rule'), 'new-rule should match after reload');
-  });
-});
-
-describe('Reload with rulesDir', () => {
+describe('Cross-Project Env Switching', () => {
   let serverProcess;
   let tmpDirA;
   let tmpDirB;
-  let rulesDirA;
-  let rulesDirB;
   const PORT = 19758;
 
   before(async () => {
-    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-reload-a-'));
-    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-reload-b-'));
-    rulesDirA = path.join(tmpDirA, '.claude', 'skills');
-    rulesDirB = path.join(tmpDirB, '.claude', 'skills');
+    tmpDirA = fs.mkdtempSync(path.join(os.tmpdir(), 'se-switch-a-'));
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-switch-b-'));
+    const rulesDirA = path.join(tmpDirA, '.claude', 'skills');
+    const rulesDirB = path.join(tmpDirB, '.claude', 'skills');
     fs.mkdirSync(rulesDirA, { recursive: true });
     fs.mkdirSync(rulesDirB, { recursive: true });
     fs.writeFileSync(path.join(rulesDirA, 'skill-rules.json'), JSON.stringify({
@@ -391,7 +326,10 @@ describe('Reload with rulesDir', () => {
       defaults: { enforcement: 'suggest', priority: 'medium' },
       rules: { 'rule-b': { type: 'domain', description: 'Rule B', triggers: { prompt: { keywords: ['beta'] } } } }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDirA], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDirA }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -407,41 +345,24 @@ describe('Reload with rulesDir', () => {
     fs.rmSync(tmpDirB, { recursive: true, force: true });
   });
 
-  it('POST /reload with rulesDir switches to new directory', async () => {
-    const beforeCheck = await request('POST', '/activate', { prompt: 'alpha keyword' }, PORT);
-    assert.ok(beforeCheck.body.hookSpecificOutput.additionalContext.includes('rule-a'), 'rule-a should match before switch');
+  it('request with env.CLAUDE_PROJECT_DIR switches project context per-request', async () => {
+    const resA = await request('POST', '/activate', {
+      prompt: 'alpha keyword',
+      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+    }, PORT);
+    assert.ok(resA.body.hookSpecificOutput.additionalContext.includes('rule-a'));
 
-    const reload = await request('POST', '/reload', { rulesDir: rulesDirB }, PORT);
-    assert.equal(reload.status, 200);
-    assert.equal(reload.body.reloaded, true);
-    assert.equal(reload.body.rulesLoaded, 1);
-    assert.equal(reload.body.rulesDir, rulesDirB);
+    const resB = await request('POST', '/activate', {
+      prompt: 'beta keyword',
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
+    assert.ok(resB.body.hookSpecificOutput.additionalContext.includes('rule-b'));
 
-    const oldCheck = await request('POST', '/activate', { prompt: 'alpha keyword' }, PORT);
-    assert.ok(!oldCheck.body.hookSpecificOutput, 'rule-a should not match after switch');
-
-    const newCheck = await request('POST', '/activate', { prompt: 'beta keyword' }, PORT);
-    assert.ok(newCheck.body.hookSpecificOutput.additionalContext.includes('rule-b'), 'rule-b should match after switch');
-  });
-
-  it('POST /reload without body maintains existing rules', async () => {
-    const reload = await request('POST', '/reload', null, PORT);
-    assert.equal(reload.status, 200);
-    assert.equal(reload.body.reloaded, true);
-    assert.equal(reload.body.rulesLoaded, 1);
-  });
-
-  it('POST /reload with nonexistent rulesDir returns 0 gracefully', async () => {
-    const reload = await request('POST', '/reload', { rulesDir: path.join(os.tmpdir(), 'nonexistent-dir') }, PORT);
-    assert.equal(reload.status, 200);
-    assert.equal(reload.body.reloaded, true);
-    assert.equal(reload.body.rulesLoaded, 0);
-  });
-
-  it('GET /health includes rulesDir', async () => {
-    const health = await request('GET', '/health', null, PORT);
-    assert.equal(health.status, 200);
-    assert.ok('rulesDir' in health.body, 'health response should include rulesDir');
+    const resBnoA = await request('POST', '/activate', {
+      prompt: 'alpha keyword',
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
+    assert.ok(!resBnoA.body.hookSpecificOutput, 'rule-a should not match in project B context');
   });
 });
 
@@ -477,9 +398,9 @@ describe('Kill Switch', () => {
     testSqlFile = path.join(tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'SELECT 1');
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], {
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
       stdio: 'pipe',
-      env: { ...process.env, SKILL_ENGINE_OFF: '1' }
+      env: { ...process.env, SKILL_ENGINE_OFF: '1', CLAUDE_PROJECT_DIR: tmpDir }
     });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
@@ -545,7 +466,10 @@ describe('Pause / Resume', () => {
     testSqlFile = path.join(tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'SELECT 1');
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -657,7 +581,10 @@ describe('Tool Name Filtering', () => {
     testSqlFile = path.join(tmpDir, 'test.sql');
     fs.writeFileSync(testSqlFile, 'SELECT 1');
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -754,7 +681,10 @@ describe('Enforce-Tool Endpoint', () => {
         }
       }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -813,7 +743,7 @@ describe('Enforce-Tool Endpoint', () => {
     }, PORT);
     assert.equal(res.status, 200);
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'allow');
-    assert.ok(res.body.systemMessage.includes('warn-rm-rf'));
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('warn-rm-rf'));
   });
 
   it('returns X-Response-Time header', async () => {
@@ -852,7 +782,10 @@ describe('Enforce-Tool Short-Circuit', () => {
         }
       }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -927,7 +860,10 @@ describe('Post-Tool Endpoint', () => {
         }
       }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -1032,7 +968,10 @@ describe('Stop Endpoint', () => {
         }
       }
     }));
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], { stdio: 'pipe' });
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -1137,7 +1076,7 @@ describe('Cross-Repo Rule Isolation', () => {
       }
     };
 
-    // Write the same rules into both dirs so we can test scoping after reload
+    // Write the same rules into both dirs so we can test scoping via per-request env
     fs.writeFileSync(path.join(rulesDirA, 'learned-rules.json'), JSON.stringify(rulesA));
     fs.writeFileSync(path.join(rulesDirB, 'learned-rules.json'), JSON.stringify(rulesA));
 
@@ -1147,8 +1086,11 @@ describe('Cross-Repo Rule Isolation', () => {
     testFileB = path.join(pipelineDir, 'config.json');
     fs.writeFileSync(testFileB, '{}');
 
-    // Start server pointed at repo A
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDirA], { stdio: 'pipe' });
+    // Start server with default project A
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
+      stdio: 'pipe',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDirA }
+    });
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Server start timeout')), 5000);
       serverProcess.stdout.on('data', (data) => {
@@ -1164,25 +1106,27 @@ describe('Cross-Repo Rule Isolation', () => {
     fs.rmSync(tmpDirB, { recursive: true, force: true });
   });
 
-  it('rule with matching sourceRepo fires when server is in that repo', async () => {
+  it('rule with matching sourceRepo fires when request targets that repo', async () => {
     const fileInA = path.join(tmpDirA, 'pipeline', 'config.json');
     const dirA = path.dirname(fileInA);
     if (!fs.existsSync(dirA)) fs.mkdirSync(dirA, { recursive: true });
     fs.writeFileSync(fileInA, '{}');
-    const res = await request('POST', '/enforce', { tool_input: { file_path: fileInA } }, PORT);
+    const res = await request('POST', '/enforce', {
+      tool_input: { file_path: fileInA },
+      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+    }, PORT);
     assert.equal(res.status, 200);
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
     assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by repo-A rule');
   });
 
-  it('rule with non-matching sourceRepo is skipped after reload to different repo', async () => {
-    // Reload server to point at repo B
-    const reloadRes = await request('POST', '/reload', { rulesDir: rulesDirB }, PORT);
-    assert.equal(reloadRes.body.reloaded, true);
-
-    const res = await request('POST', '/enforce', { tool_input: { file_path: testFileB } }, PORT);
+  it('rule with non-matching sourceRepo is skipped when request targets different repo', async () => {
+    const res = await request('POST', '/enforce', {
+      tool_input: { file_path: testFileB },
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
     assert.equal(res.status, 200);
-    // scoped-to-a should NOT fire because sourceRepo is repo A, but server is now in repo B
+    // scoped-to-a should NOT fire because sourceRepo is repo A, but request targets repo B
     const hso = res.body.hookSpecificOutput;
     if (hso && hso.permissionDecision === 'deny') {
       assert.notEqual(hso.permissionDecisionReason, 'Blocked by repo-A rule',
@@ -1193,15 +1137,20 @@ describe('Cross-Repo Rule Isolation', () => {
   it('rule without sourceRepo (global) fires in any repo', async () => {
     const dangerousFile = path.join(tmpDirB, 'bad.dangerous');
     fs.writeFileSync(dangerousFile, 'danger');
-    const res = await request('POST', '/enforce', { tool_input: { file_path: dangerousFile } }, PORT);
+    const res = await request('POST', '/enforce', {
+      tool_input: { file_path: dangerousFile },
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
     assert.equal(res.status, 200);
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
     assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by global rule');
   });
 
   it('scoped activation rule is skipped in different repo', async () => {
-    // Server is still pointed at repo B from earlier reload
-    const res = await request('POST', '/activate', { prompt: 'check scoped-keyword here' }, PORT);
+    const res = await request('POST', '/activate', {
+      prompt: 'check scoped-keyword here',
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
     assert.equal(res.status, 200);
     // scoped-activate should NOT fire
     const hso = res.body.hookSpecificOutput;
@@ -1212,24 +1161,21 @@ describe('Cross-Repo Rule Isolation', () => {
   });
 
   it('global activation rule fires in any repo', async () => {
-    const res = await request('POST', '/activate', { prompt: 'check global-keyword here' }, PORT);
+    const res = await request('POST', '/activate', {
+      prompt: 'check global-keyword here',
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
     assert.equal(res.status, 200);
     assert.ok(res.body.hookSpecificOutput, 'global activation rule should fire');
     assert.ok(res.body.hookSpecificOutput.additionalContext.includes('global-activate'));
   });
 
-  it('health shows projectRoot matching current repo', async () => {
-    const res = await request('GET', '/health', null, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(res.body.projectRoot, 'health should include projectRoot');
-    const expectedRoot = tmpDirB.replace(/\\/g, '/');
-    assert.equal(res.body.projectRoot, expectedRoot);
-  });
-
-  it('reload back to repo A re-enables scoped rules', async () => {
-    await request('POST', '/reload', { rulesDir: rulesDirA }, PORT);
+  it('switching env back to repo A re-enables scoped rules', async () => {
     const fileInA = path.join(tmpDirA, 'pipeline', 'config.json');
-    const res = await request('POST', '/enforce', { tool_input: { file_path: fileInA } }, PORT);
+    const res = await request('POST', '/enforce', {
+      tool_input: { file_path: fileInA },
+      env: { CLAUDE_PROJECT_DIR: tmpDirA }
+    }, PORT);
     assert.equal(res.status, 200);
     assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
     assert.equal(res.body.hookSpecificOutput.permissionDecisionReason, 'Blocked by repo-A rule');
@@ -1265,7 +1211,7 @@ describe('Pre-Write Endpoint — Task Safety', () => {
       prodNameRegex: '\\bprod\\b|PRODSPO|spprod'
     }));
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], {
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
       stdio: 'pipe',
       env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
     });
@@ -1452,7 +1398,7 @@ describe('Pre-Write Endpoint — Security Model Config', () => {
       version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
     }));
 
-    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT), '--rules-dir', rulesDir], {
+    serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(PORT)], {
       stdio: 'pipe',
       env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir }
     });
