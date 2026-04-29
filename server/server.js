@@ -311,38 +311,61 @@ function matchFileCompiled(filePath, entry, projectRoot, rulesData) {
   return true;
 }
 
+// --- Shared matching infrastructure ---
+function collectMatches(compiledRules, projectRoot, session, rulesData, filterFn) {
+  const matches = [];
+  for (const entry of compiledRules) {
+    if (!ruleMatchesProject(entry, projectRoot)) continue;
+    if (checkSkip(entry.name, entry.rule, session)) continue;
+    const result = filterFn(entry, rulesData);
+    if (!result) continue;
+    matches.push({
+      name: entry.name,
+      rule: entry.rule,
+      priority: result.priority || getPriority(entry.rule, rulesData.defaults),
+      enforcement: result.enforcement || getEnforcement(entry.rule, rulesData.defaults)
+    });
+  }
+  return matches;
+}
+
+function sortByPriority(matches) {
+  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+}
+
+function sortBlockFirst(matches) {
+  matches.sort((a, b) => {
+    if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
+    if (a.enforcement !== 'block' && b.enforcement === 'block') return 1;
+    return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+  });
+}
+
+function recordSessionOnce(session, matches) {
+  if (!session) return;
+  for (const m of matches) {
+    if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce) {
+      session.firedRules.add(m.name);
+    }
+  }
+}
+
 // --- Activate handler ---
 function handleActivate(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const prompt = input && input.prompt;
   if (!prompt) return {};
-
   const ctx = getRequestContext(input);
   const session = getSession(input.session_id, ctx.projectRoot);
-  const matches = [];
 
-  for (const entry of ctx.compiledRules) {
-    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-    if (checkSkip(entry.name, entry.rule, session)) continue;
-    if (!entry.keywordsLower && !entry.intentRe) continue;
-    if (!matchPromptCompiled(prompt, entry)) continue;
-    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
-    const enforcement = getEnforcement(entry.rule, ctx.rulesData.defaults);
-    matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
-  }
-
+  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+    if (!entry.keywordsLower && !entry.intentRe) return false;
+    if (!matchPromptCompiled(prompt, entry)) return false;
+    return {};
+  });
   if (!matches.length) return {};
-
-  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
-
-  // Record sessionOnce
-  if (session) {
-    for (const m of matches) {
-      if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce) {
-        session.firedRules.add(m.name);
-      }
-    }
-  }
+  sortByPriority(matches);
+  recordSessionOnce(session, matches);
 
   const count = matches.length;
   const lines = [
@@ -356,12 +379,7 @@ function handleActivate(input) {
     if (m.rule.skillPath) lines.push('  → Read: ' + m.rule.skillPath);
     lines.push('');
   }
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: lines.join('\n')
-    }
-  };
+  return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
 }
 
 // --- Enforce-tool handler (PreToolUse for any tool) ---
@@ -372,57 +390,36 @@ function handleEnforceTool(input) {
   const toolName = input && input.tool_name;
   const toolInput = input && input.tool_input;
   if (!toolName && !toolInput) return {};
-
   const inputStr = toolInput ? JSON.stringify(toolInput) : '';
   const session = getSession(input.session_id, ctx.projectRoot);
-  const matches = [];
 
-  for (const entry of ctx.compiledRules) {
-    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-    if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) continue;
-    if (entry.rule.type !== 'guardrail') continue;
-    const enforcement = getEnforcement(entry.rule, ctx.rulesData.defaults);
-    if (enforcement !== 'block' && enforcement !== 'warn') continue;
-    if (checkSkip(entry.name, entry.rule, session)) continue;
-    if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) continue;
-    if (entry.toolTriggerNamesSet && !toolName) continue;
-    if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) continue;
-    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
-    matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
-  }
-
-  if (!matches.length) return {};
-
-  matches.sort((a, b) => {
-    if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
-    if (a.enforcement !== 'block' && b.enforcement === 'block') return 1;
-    return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
+    if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
+    if (entry.rule.type !== 'guardrail') return false;
+    const enforcement = getEnforcement(entry.rule, rd.defaults);
+    if (enforcement !== 'block' && enforcement !== 'warn') return false;
+    if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) return false;
+    if (entry.toolTriggerNamesSet && !toolName) return false;
+    if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
+    return { enforcement };
   });
+  if (!matches.length) return {};
+  sortBlockFirst(matches);
 
   const blockMatch = matches.find(m => m.enforcement === 'block');
   if (blockMatch) {
-    const reason = blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name);
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: reason
+        permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name)
       }
     };
   }
-
-  const warnings = matches
-    .filter(m => m.enforcement === 'warn')
-    .map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
+  const warnings = matches.filter(m => m.enforcement === 'warn').map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
   const joined = warnings.join('\n');
   if (joined) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        additionalContext: joined
-      }
-    };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: joined } };
   }
   return {};
 }
@@ -434,41 +431,22 @@ function handlePostTool(input) {
   if (!ctx.hasOutputTriggerRules) return {};
   const toolName = input && input.tool_name;
   const toolOutput = input && input.tool_output;
-
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
   const session = getSession(input && input.session_id, ctx.projectRoot);
-  const matches = [];
 
-  for (const entry of ctx.compiledRules) {
-    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-    if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) continue;
-    if (checkSkip(entry.name, entry.rule, session)) continue;
-    if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) continue;
-    if (entry.outputToolNamesSet && !toolName) continue;
-    if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) continue;
-    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
-    matches.push({ name: entry.name, rule: entry.rule, priority });
-  }
-
+  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+    if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
+    if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
+    if (entry.outputToolNamesSet && !toolName) return false;
+    if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) return false;
+    return {};
+  });
   if (!matches.length) return {};
-
-  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
-
-  if (session) {
-    for (const m of matches) {
-      if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce) {
-        session.firedRules.add(m.name);
-      }
-    }
-  }
+  sortByPriority(matches);
+  recordSessionOnce(session, matches);
 
   const lines = matches.map(m => m.rule.guidance || m.rule.description);
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'PostToolUse',
-      additionalContext: lines.join('\n')
-    }
-  };
+  return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: lines.join('\n') } };
 }
 
 // --- Stop handler ---
@@ -476,37 +454,18 @@ function handleStop(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const ctx = getRequestContext(input);
   if (!ctx.hasStopRules) return {};
-
   const session = getSession(input && input.session_id, ctx.projectRoot);
-  const matches = [];
 
-  for (const entry of ctx.compiledRules) {
-    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-    if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) continue;
-    if (checkSkip(entry.name, entry.rule, session)) continue;
-    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
-    matches.push({ name: entry.name, rule: entry.rule, priority });
-  }
-
+  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+    if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) return false;
+    return {};
+  });
   if (!matches.length) return {};
-
-  matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
-
-  if (session) {
-    for (const m of matches) {
-      if (m.rule.skipConditions && m.rule.skipConditions.sessionOnce) {
-        session.firedRules.add(m.name);
-      }
-    }
-  }
+  sortByPriority(matches);
+  recordSessionOnce(session, matches);
 
   const lines = matches.map(m => m.rule.guidance || m.rule.description);
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'Stop',
-      additionalContext: lines.join('\n')
-    }
-  };
+  return { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: lines.join('\n') } };
 }
 
 // --- Enforce handler ---
@@ -516,60 +475,38 @@ function handleEnforce(input) {
   if (!filePath) return {};
   const toolName = input && input.tool_name;
   const writeContent = input && input.tool_input && (input.tool_input.content || input.tool_input.new_string || '');
-
   const ctx = getRequestContext(input);
   const session = getSession(input.session_id, ctx.projectRoot);
-  const matches = [];
 
-  for (const entry of ctx.compiledRules) {
-    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-    if (entry.rule.type !== 'guardrail') continue;
-    const enforcement = getEnforcement(entry.rule, ctx.rulesData.defaults);
-    if (enforcement !== 'block' && enforcement !== 'warn') continue;
-    if (!entry.pathRe || !entry.pathRe.length) continue;
-    if (checkSkip(entry.name, entry.rule, session)) continue;
-    if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) continue;
-    if (!matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData)) continue;
-    // Check content patterns against the content being written (if provided)
+  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
+    if (entry.rule.type !== 'guardrail') return false;
+    const enforcement = getEnforcement(entry.rule, rd.defaults);
+    if (enforcement !== 'block' && enforcement !== 'warn') return false;
+    if (!entry.pathRe || !entry.pathRe.length) return false;
+    if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) return false;
+    if (!matchFileCompiled(filePath, entry, ctx.projectRoot, rd)) return false;
     if (writeContent && entry.contentRe && entry.contentRe.length > 0) {
-      if (!entry.contentRe.some(re => re.test(writeContent))) continue;
+      if (!entry.contentRe.some(re => re.test(writeContent))) return false;
     }
-    const priority = getPriority(entry.rule, ctx.rulesData.defaults);
-    matches.push({ name: entry.name, rule: entry.rule, priority, enforcement });
-  }
-
-  if (!matches.length) return {};
-
-  matches.sort((a, b) => {
-    if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
-    if (a.enforcement !== 'block' && b.enforcement === 'block') return 1;
-    return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
+    return { enforcement };
   });
+  if (!matches.length) return {};
+  sortBlockFirst(matches);
 
   const blockMatch = matches.find(m => m.enforcement === 'block');
   if (blockMatch) {
-    const reason = blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name);
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: reason
+        permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name)
       }
     };
   }
-
-  const warnings = matches
-    .filter(m => m.enforcement === 'warn')
-    .map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
+  const warnings = matches.filter(m => m.enforcement === 'warn').map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
   const joined = warnings.join('\n');
   if (joined) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        additionalContext: joined
-      }
-    };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: joined } };
   }
   return {};
 }
