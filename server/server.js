@@ -166,8 +166,8 @@ function registerSession(sessionId, projectDir) {
   sessionRegistry.set(sessionId, {
     projectDir: normalizedDir,
     rulesDir,
-    registeredAt: new Date().toISOString(),
-    lastRequest: new Date().toISOString(),
+    registeredAt: Date.now(),
+    lastRequest: Date.now(),
   });
   lastRegisteredSessionId = sessionId;
 
@@ -188,11 +188,11 @@ function getRequestContext(input) {
     projectDir = input.env.CLAUDE_PROJECT_DIR;
   } else if (input && input.session_id && sessionRegistry.has(input.session_id)) {
     const entry = sessionRegistry.get(input.session_id);
-    entry.lastRequest = new Date().toISOString();
+    entry.lastRequest = Date.now();
     projectDir = entry.projectDir;
   } else if (lastRegisteredSessionId && sessionRegistry.has(lastRegisteredSessionId)) {
     const entry = sessionRegistry.get(lastRegisteredSessionId);
-    entry.lastRequest = new Date().toISOString();
+    entry.lastRequest = Date.now();
     projectDir = entry.projectDir;
   } else if (process.env.CLAUDE_PROJECT_DIR) {
     projectDir = process.env.CLAUDE_PROJECT_DIR;
@@ -297,7 +297,7 @@ function cleanStaleSessions() {
     if (s.lastSeen < cutoff) sessions.delete(id);
   }
   for (const [id, entry] of sessionRegistry) {
-    const lastActive = new Date(entry.lastRequest).getTime();
+    const lastActive = entry.lastRequest;
     if (lastActive < cutoff) {
       sessionRegistry.delete(id);
       if (lastRegisteredSessionId === id) lastRegisteredSessionId = null;
@@ -618,8 +618,8 @@ async function handleRequest(req, res) {
         projectDir: entry.projectDir,
         rulesDir: entry.rulesDir,
         rulesLoaded: cached.compiledRules.length,
-        registeredAt: entry.registeredAt,
-        lastRequest: entry.lastRequest,
+        registeredAt: new Date(entry.registeredAt).toISOString(),
+        lastRequest: new Date(entry.lastRequest).toISOString(),
       };
     }
 
