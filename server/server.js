@@ -646,6 +646,19 @@ async function handleRequest(req, res) {
     const avgMs = timedResponses > 0
       ? Number(totalResponseTimeNs / BigInt(timedResponses)) / 1e6
       : 0;
+
+    const sessionsObj = {};
+    for (const [sid, entry] of sessionRegistry) {
+      const cached = ruleCache.getRules(entry.rulesDir);
+      sessionsObj[sid] = {
+        projectDir: entry.projectDir,
+        rulesDir: entry.rulesDir,
+        rulesLoaded: cached.compiledRules.length,
+        registeredAt: entry.registeredAt,
+        lastRequest: entry.lastRequest,
+      };
+    }
+
     return respond(res, 200, {
       version: SERVER_VERSION,
       pid: process.pid,
@@ -654,30 +667,64 @@ async function handleRequest(req, res) {
       port: PORT,
       lastEvent,
       eventsProcessed,
-      activeSessions: sessions.size,
+      activeSessions: sessionRegistry.size,
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
       rulesDir: ctx.rulesDir || null,
       hasToolTriggerRules: ctx.hasToolTriggerRules,
       hasOutputTriggerRules: ctx.hasOutputTriggerRules,
       hasStopRules: ctx.hasStopRules,
+      sessions: sessionsObj,
       cache: cacheState,
+      deprecatedSetProjectCalls,
     });
   }
 
-  if (method === 'GET' && url === '/rules') {
-    const ctx = getRequestContext(null);
-    const rules = ctx.compiledRules.map(e => ({
-      name: e.name,
-      type: e.rule.type,
-      enforcement: getEnforcement(e.rule, ctx.rulesData.defaults),
-      priority: getPriority(e.rule, ctx.rulesData.defaults),
-      description: e.rule.description,
-      sourceRepo: e.sourceRepo || null,
-      triggers: Object.keys(e.rule.triggers || {}),
-      hookEvents: e.rule.hookEvents || null,
-    }));
-    return respond(res, 200, { projectDir: lastProjectDir, rulesDir: ctx.rulesDir, count: rules.length, rules });
+  if (method === 'GET' && (url === '/rules' || url.startsWith('/rules?'))) {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const sessionFilter = params.get('session');
+
+    if (sessionFilter && sessionRegistry.has(sessionFilter)) {
+      const entry = sessionRegistry.get(sessionFilter);
+      const cached = ruleCache.getRules(entry.rulesDir);
+      const rules = cached.compiledRules.map(e => ({
+        name: e.name,
+        type: e.rule.type,
+        enforcement: getEnforcement(e.rule, cached.rulesData.defaults),
+        priority: getPriority(e.rule, cached.rulesData.defaults),
+        description: e.rule.description,
+        sourceRepo: e.sourceRepo || null,
+        triggers: Object.keys(e.rule.triggers || {}),
+        hookEvents: e.rule.hookEvents || null,
+      }));
+      return respond(res, 200, {
+        session: sessionFilter,
+        projectDir: entry.projectDir,
+        rulesDir: entry.rulesDir,
+        count: rules.length,
+        rules,
+      });
+    }
+
+    const allRules = [];
+    for (const [sid, entry] of sessionRegistry) {
+      const cached = ruleCache.getRules(entry.rulesDir);
+      for (const e of cached.compiledRules) {
+        allRules.push({
+          session: sid,
+          projectDir: entry.projectDir,
+          name: e.name,
+          type: e.rule.type,
+          enforcement: getEnforcement(e.rule, cached.rulesData.defaults),
+          priority: getPriority(e.rule, cached.rulesData.defaults),
+          description: e.rule.description,
+          sourceRepo: e.sourceRepo || null,
+          triggers: Object.keys(e.rule.triggers || {}),
+          hookEvents: e.rule.hookEvents || null,
+        });
+      }
+    }
+    return respond(res, 200, { count: allRules.length, rules: allRules });
   }
 
   // Route table for POST handler endpoints

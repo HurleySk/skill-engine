@@ -1447,3 +1447,59 @@ describe('Session Registry', () => {
     assert.equal(res.status, 400);
   });
 });
+
+describe('Health and Rules with Sessions', () => {
+  let harness;
+  const PORT = 19769;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'health-rule': { type: 'domain', description: 'Health rule', triggers: { prompt: { keywords: ['health-test'] } } } }
+    });
+    await request('POST', '/register-session', { sessionId: 'health-sess', projectDir: harness.tmpDir }, PORT);
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('GET /health shows sessions map with project detail', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.sessions, 'should have sessions field');
+    assert.ok(res.body.sessions['health-sess'], 'should have our registered session');
+    const sess = res.body.sessions['health-sess'];
+    assert.ok(sess.projectDir);
+    assert.ok(sess.rulesDir);
+    assert.equal(typeof sess.rulesLoaded, 'number');
+    assert.ok(sess.registeredAt);
+  });
+
+  it('GET /health shows cache stats', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.cache, 'should have cache field');
+    assert.equal(typeof res.body.cache.entries, 'number');
+    assert.equal(res.body.cache.maxEntries, 10);
+  });
+
+  it('GET /health shows deprecatedSetProjectCalls counter', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(typeof res.body.deprecatedSetProjectCalls, 'number');
+  });
+
+  it('GET /rules?session=X returns rules for that session project', async () => {
+    const res = await request('GET', '/rules?session=health-sess', null, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.session, 'health-sess');
+    assert.equal(res.body.count, 1);
+    assert.equal(res.body.rules[0].name, 'health-rule');
+  });
+
+  it('GET /rules without session returns all rules across sessions', async () => {
+    const res = await request('GET', '/rules', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.count >= 1);
+    assert.ok(res.body.rules.some(r => r.name === 'health-rule'));
+  });
+});
