@@ -1503,3 +1503,61 @@ describe('Health and Rules with Sessions', () => {
     assert.ok(res.body.rules.some(r => r.name === 'health-rule'));
   });
 });
+
+describe('PostToolUse on Read-Only Tools', () => {
+  let harness;
+  const PORT = 19771;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'detect-error-pattern': {
+          type: 'domain',
+          enforcement: 'suggest',
+          priority: 'high',
+          description: 'Detected error pattern in file',
+          guidance: 'This file contains Entity Does Not Exist errors. Check ADF pipeline configuration.',
+          triggers: {
+            output: {
+              toolNames: ['Read', 'Grep'],
+              outputPatterns: ['Entity Does Not Exist']
+            }
+          }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('fires output trigger for Read tool output', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Read',
+      tool_output: 'Error: Entity Does Not Exist in pipeline xyz'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('Entity Does Not Exist errors'));
+  });
+
+  it('fires output trigger for Grep tool output', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Grep',
+      tool_output: 'file.csv:42: Entity Does Not Exist'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('Entity Does Not Exist errors'));
+  });
+
+  it('does not fire for non-matching tool', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Bash',
+      tool_output: 'Entity Does Not Exist'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'should not match Bash');
+  });
+});
