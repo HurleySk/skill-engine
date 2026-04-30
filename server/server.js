@@ -89,17 +89,12 @@ function getEnforcement(rule, defaults) {
   return rule.enforcement || (defaults && defaults.enforcement) || 'suggest';
 }
 
-// --- RuleCache class (mtime-based, stateless per-request) ---
+// --- RuleCache class (multi-key, mtime-based, immutable snapshots) ---
+const MAX_CACHE_ENTRIES = 10;
+
 class RuleCache {
   constructor() {
-    this._rulesDir = null;
-    this._mainMtime = null;
-    this._learnedMtime = null;
-    this._compiledRules = [];
-    this._rulesData = null;
-    this._hasToolTriggerRules = false;
-    this._hasOutputTriggerRules = false;
-    this._hasStopRules = false;
+    this._entries = new Map();
   }
 
   _getMtime(filePath) {
@@ -112,11 +107,8 @@ class RuleCache {
 
   getCachedState() {
     return {
-      rulesDir: this._rulesDir,
-      rulesLoaded: this._compiledRules.length,
-      hasToolTriggerRules: this._hasToolTriggerRules,
-      hasOutputTriggerRules: this._hasOutputTriggerRules,
-      hasStopRules: this._hasStopRules,
+      entries: this._entries.size,
+      maxEntries: MAX_CACHE_ENTRIES,
     };
   }
 
@@ -135,19 +127,10 @@ class RuleCache {
     const mainMtime = this._getMtime(mainFile);
     const learnedMtime = this._getMtime(learnedFile);
 
-    // If same rulesDir and mtimes unchanged, return cached data
-    if (
-      rulesDir === this._rulesDir &&
-      mainMtime === this._mainMtime &&
-      learnedMtime === this._learnedMtime
-    ) {
-      return {
-        compiledRules: this._compiledRules,
-        rulesData: this._rulesData,
-        hasToolTriggerRules: this._hasToolTriggerRules,
-        hasOutputTriggerRules: this._hasOutputTriggerRules,
-        hasStopRules: this._hasStopRules,
-      };
+    const existing = this._entries.get(rulesDir);
+    if (existing && mainMtime === existing.mainMtime && learnedMtime === existing.learnedMtime) {
+      existing.lastAccess = Date.now();
+      return existing.snapshot;
     }
 
     // Recompile
@@ -166,29 +149,39 @@ class RuleCache {
     }
 
     const compiled = compileRules(rulesData);
-
-    // Compute tri-state flags
     const hasToolTriggerRules = compiled.some(e => e.toolTriggerNamesSet || (e.inputRe && e.inputRe.length));
     const hasOutputTriggerRules = compiled.some(e => e.outputToolNamesSet || (e.outputRe && e.outputRe.length));
     const hasStopRules = compiled.some(e => e.hookEventsSet && e.hookEventsSet.has('Stop'));
 
-    // Cache
-    this._rulesDir = rulesDir;
-    this._mainMtime = mainMtime;
-    this._learnedMtime = learnedMtime;
-    this._compiledRules = compiled;
-    this._rulesData = rulesData;
-    this._hasToolTriggerRules = hasToolTriggerRules;
-    this._hasOutputTriggerRules = hasOutputTriggerRules;
-    this._hasStopRules = hasStopRules;
-
-    return {
+    const snapshot = Object.freeze({
       compiledRules: compiled,
       rulesData,
       hasToolTriggerRules,
       hasOutputTriggerRules,
       hasStopRules,
-    };
+    });
+
+    // LRU eviction
+    if (!existing && this._entries.size >= MAX_CACHE_ENTRIES) {
+      let oldestKey = null;
+      let oldestTime = Infinity;
+      for (const [key, entry] of this._entries) {
+        if (entry.lastAccess < oldestTime) {
+          oldestTime = entry.lastAccess;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey) this._entries.delete(oldestKey);
+    }
+
+    this._entries.set(rulesDir, {
+      mainMtime,
+      learnedMtime,
+      lastAccess: Date.now(),
+      snapshot,
+    });
+
+    return snapshot;
   }
 }
 
@@ -607,8 +600,8 @@ async function handleRequest(req, res) {
   const startNs = process.hrtime.bigint();
 
   if (method === 'GET' && url === '/health') {
-    getRequestContext(null); // warm cache from process.env if not yet populated
-    const cached = ruleCache.getCachedState();
+    const ctx = getRequestContext(null);
+    const cacheState = ruleCache.getCachedState();
     const avgMs = timedResponses > 0
       ? Number(totalResponseTimeNs / BigInt(timedResponses)) / 1e6
       : 0;
@@ -616,17 +609,18 @@ async function handleRequest(req, res) {
       version: SERVER_VERSION,
       pid: process.pid,
       uptime: process.uptime(),
-      rulesLoaded: cached.rulesLoaded,
+      rulesLoaded: ctx.compiledRules.length,
       port: PORT,
       lastEvent,
       eventsProcessed,
       activeSessions: sessions.size,
       avgResponseTimeMs: Math.round(avgMs * 100) / 100,
       paused,
-      rulesDir: cached.rulesDir || null,
-      hasToolTriggerRules: cached.hasToolTriggerRules,
-      hasOutputTriggerRules: cached.hasOutputTriggerRules,
-      hasStopRules: cached.hasStopRules,
+      rulesDir: ctx.rulesDir || null,
+      hasToolTriggerRules: ctx.hasToolTriggerRules,
+      hasOutputTriggerRules: ctx.hasOutputTriggerRules,
+      hasStopRules: ctx.hasStopRules,
+      cache: cacheState,
     });
   }
 
