@@ -1446,6 +1446,18 @@ describe('Session Registry', () => {
     const res = await request('POST', '/register-session', { sessionId: 'no-proj' }, PORT);
     assert.equal(res.status, 400);
   });
+
+  it('POST /register-session returns errors when rules files are missing', async () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'se-no-rules-'));
+    const res = await request('POST', '/register-session', {
+      sessionId: 'no-rules-sess',
+      projectDir: emptyDir
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.errors.length > 0, 'should have errors when no rules files exist');
+    assert.ok(res.body.errors[0].includes('No skill-rules.json'), 'error should mention missing files');
+    fs.rmSync(emptyDir, { recursive: true, force: true });
+  });
 });
 
 describe('Health and Rules with Sessions', () => {

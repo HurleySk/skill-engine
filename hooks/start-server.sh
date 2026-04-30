@@ -42,14 +42,18 @@ register_session() {
   PAYLOAD=$(node -e "console.log(JSON.stringify({sessionId:process.argv[1],projectDir:process.argv[2]}))" \
     "$SESSION_ID" "$CLAUDE_PROJECT_DIR" 2>/dev/null)
   local RESULT
-  RESULT=$(curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
+  RESULT=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 -X POST -H "Content-Type: application/json" \
     -d "$PAYLOAD" \
     "http://localhost:$PORT/register-session" 2>/dev/null)
-  local ERRORS
-  ERRORS=$(echo "$RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const e=JSON.parse(d).errors||[];if(e.length)console.log(e.join('; '))}catch{}})" 2>/dev/null)
-  if [ -n "$ERRORS" ]; then
-    echo "skill-engine: warning — $ERRORS" >&2
+  if [ "$RESULT" = "200" ]; then
+    return
   fi
+  # Fallback to /set-project for older servers without /register-session
+  local SET_PAYLOAD
+  SET_PAYLOAD=$(node -e "console.log(JSON.stringify({projectDir:process.argv[1]}))" "$CLAUDE_PROJECT_DIR" 2>/dev/null)
+  curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
+    -d "$SET_PAYLOAD" \
+    "http://localhost:$PORT/set-project" > /dev/null 2>&1
 }
 
 PLUGIN_DIR="$(_resolve_latest_plugin_dir)"
