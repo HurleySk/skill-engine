@@ -296,6 +296,13 @@ function cleanStaleSessions() {
   for (const [id, s] of sessions) {
     if (s.lastSeen < cutoff) sessions.delete(id);
   }
+  for (const [id, entry] of sessionRegistry) {
+    const lastActive = new Date(entry.lastRequest).getTime();
+    if (lastActive < cutoff) {
+      sessionRegistry.delete(id);
+      if (lastRegisteredSessionId === id) lastRegisteredSessionId = null;
+    }
+  }
 }
 
 const cleanupInterval = setInterval(cleanStaleSessions, 5 * 60 * 1000);
