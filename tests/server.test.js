@@ -1294,3 +1294,76 @@ describe('Project-Scoped Session State', () => {
     assert.ok(firstB.body.hookSpecificOutput.additionalContext.includes('once-rule'));
   });
 });
+
+describe('Multi-Key RuleCache', () => {
+  let harness;
+  let tmpDirB;
+  const PORT = 19754;
+
+  before(async () => {
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-cache-b-'));
+    const rulesDirB = path.join(tmpDirB, '.claude', 'skills');
+    fs.mkdirSync(rulesDirB, { recursive: true });
+    fs.writeFileSync(path.join(rulesDirB, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-b': { type: 'domain', description: 'Rule B', triggers: { prompt: { keywords: ['beta-cache'] } } } }
+    }));
+
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-a': { type: 'domain', description: 'Rule A', triggers: { prompt: { keywords: ['alpha-cache'] } } } }
+    });
+  });
+
+  after(() => { stopTestServer(harness, [tmpDirB]); });
+
+  it('caches rules for two projects simultaneously without thrashing', async () => {
+    const resA1 = await request('POST', '/activate', {
+      prompt: 'alpha-cache keyword',
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
+    }, PORT);
+    assert.ok(resA1.body.hookSpecificOutput.additionalContext.includes('rule-a'));
+
+    const resB = await request('POST', '/activate', {
+      prompt: 'beta-cache keyword',
+      env: { CLAUDE_PROJECT_DIR: tmpDirB }
+    }, PORT);
+    assert.ok(resB.body.hookSpecificOutput.additionalContext.includes('rule-b'));
+
+    const resA2 = await request('POST', '/activate', {
+      prompt: 'alpha-cache keyword',
+      env: { CLAUDE_PROJECT_DIR: harness.tmpDir }
+    }, PORT);
+    assert.ok(resA2.body.hookSpecificOutput.additionalContext.includes('rule-a'));
+  });
+
+  it('GET /health shows cache stats', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.cache, 'should have cache field');
+    assert.equal(typeof res.body.cache.entries, 'number');
+    assert.equal(res.body.cache.maxEntries, 10);
+  });
+
+  it('evicts LRU entry when cache exceeds max size', async () => {
+    const dirs = [];
+    for (let i = 0; i < 11; i++) {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), `se-lru-${i}-`));
+      const rd = path.join(d, '.claude', 'skills');
+      fs.mkdirSync(rd, { recursive: true });
+      fs.writeFileSync(path.join(rd, 'skill-rules.json'), JSON.stringify({
+        version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' },
+        rules: { [`rule-${i}`]: { type: 'domain', description: `Rule ${i}`, triggers: { prompt: { keywords: [`lru-${i}`] } } } }
+      }));
+      dirs.push(d);
+      await request('POST', '/activate', { prompt: `lru-${i}`, env: { CLAUDE_PROJECT_DIR: d } }, PORT);
+    }
+
+    const health = await request('GET', '/health', null, PORT);
+    assert.ok(health.body.cache.entries <= 10, `cache entries should be <= 10, got ${health.body.cache.entries}`);
+
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+});
