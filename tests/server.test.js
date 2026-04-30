@@ -1367,3 +1367,83 @@ describe('Multi-Key RuleCache', () => {
     for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
   });
 });
+
+describe('Session Registry', () => {
+  let harness;
+  let tmpDirB;
+  const PORT = 19768;
+
+  before(async () => {
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-sess-reg-b-'));
+    const rulesDirB = path.join(tmpDirB, '.claude', 'skills');
+    fs.mkdirSync(rulesDirB, { recursive: true });
+    fs.writeFileSync(path.join(rulesDirB, 'skill-rules.json'), JSON.stringify({
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-b': { type: 'domain', description: 'Rule B', triggers: { prompt: { keywords: ['sess-beta'] } } } }
+    }));
+
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: { 'rule-a': { type: 'domain', description: 'Rule A', triggers: { prompt: { keywords: ['sess-alpha'] } } } }
+    });
+  });
+
+  after(() => { stopTestServer(harness, [tmpDirB]); });
+
+  it('POST /register-session registers a session and returns confirmation', async () => {
+    const res = await request('POST', '/register-session', {
+      sessionId: 'test-sess-a',
+      projectDir: harness.tmpDir
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sessionId, 'test-sess-a');
+    assert.ok(res.body.rulesDir);
+    assert.equal(res.body.rulesLoaded, 1);
+    assert.ok(Array.isArray(res.body.errors));
+    assert.equal(res.body.errors.length, 0);
+  });
+
+  it('registered session resolves correct project rules via session_id', async () => {
+    await request('POST', '/register-session', { sessionId: 'iso-sess-a', projectDir: harness.tmpDir }, PORT);
+    await request('POST', '/register-session', { sessionId: 'iso-sess-b', projectDir: tmpDirB }, PORT);
+
+    const resA = await request('POST', '/activate', { prompt: 'sess-alpha keyword', session_id: 'iso-sess-a' }, PORT);
+    assert.ok(resA.body.hookSpecificOutput);
+    assert.ok(resA.body.hookSpecificOutput.additionalContext.includes('rule-a'));
+
+    const resB = await request('POST', '/activate', { prompt: 'sess-beta keyword', session_id: 'iso-sess-b' }, PORT);
+    assert.ok(resB.body.hookSpecificOutput);
+    assert.ok(resB.body.hookSpecificOutput.additionalContext.includes('rule-b'));
+
+    const resAnoB = await request('POST', '/activate', { prompt: 'sess-beta keyword', session_id: 'iso-sess-a' }, PORT);
+    assert.ok(!resAnoB.body.hookSpecificOutput, 'session A should not see rule-b');
+  });
+
+  it('unregistered session_id falls back to most recently registered project', async () => {
+    await request('POST', '/register-session', { sessionId: 'fallback-sess', projectDir: harness.tmpDir }, PORT);
+    const res = await request('POST', '/activate', { prompt: 'sess-alpha keyword', session_id: 'unknown-sess-id' }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('rule-a'));
+  });
+
+  it('request with no session_id falls back to most recently registered project', async () => {
+    await request('POST', '/register-session', { sessionId: 'no-sid-fallback', projectDir: harness.tmpDir }, PORT);
+    const res = await request('POST', '/activate', { prompt: 'sess-alpha keyword' }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('rule-a'));
+  });
+
+  it('deprecated /set-project still works via synthetic session', async () => {
+    await request('POST', '/set-project', { projectDir: tmpDirB }, PORT);
+    const res = await request('POST', '/activate', { prompt: 'sess-beta keyword' }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('rule-b'));
+  });
+
+  it('POST /register-session with missing fields returns 400', async () => {
+    const res = await request('POST', '/register-session', { sessionId: 'no-proj' }, PORT);
+    assert.equal(res.status, 400);
+  });
+});

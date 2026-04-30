@@ -187,20 +187,61 @@ class RuleCache {
 
 const ruleCache = new RuleCache();
 
-// --- Project dir: updated by /set-project on each SessionStart ---
-let lastProjectDir = process.env.CLAUDE_PROJECT_DIR || null;
+// --- Session Registry (replaces lastProjectDir) ---
+const crypto = require('crypto');
+const sessionRegistry = new Map();
+let lastRegisteredSessionId = null;
+let deprecatedSetProjectCalls = 0;
+
+function registerSession(sessionId, projectDir) {
+  const normalizedDir = normalizePath(projectDir);
+  const rulesDir = normalizedDir + '/.claude/skills';
+  const errors = [];
+
+  const mainFile = path.join(rulesDir, 'skill-rules.json');
+  const learnedFile = path.join(rulesDir, 'learned-rules.json');
+  if (!fs.existsSync(mainFile) && !fs.existsSync(learnedFile)) {
+    errors.push('No skill-rules.json or learned-rules.json found in ' + rulesDir);
+  }
+
+  const cached = ruleCache.getRules(rulesDir);
+
+  sessionRegistry.set(sessionId, {
+    projectDir: normalizedDir,
+    rulesDir,
+    registeredAt: new Date().toISOString(),
+    lastRequest: new Date().toISOString(),
+  });
+  lastRegisteredSessionId = sessionId;
+
+  return {
+    sessionId,
+    projectDir: normalizedDir,
+    rulesDir,
+    rulesLoaded: cached.compiledRules.length,
+    errors,
+  };
+}
 
 // --- Per-request context helper ---
 function getRequestContext(input) {
   let projectDir = null;
+
   if (input && input.env && input.env.CLAUDE_PROJECT_DIR) {
     projectDir = input.env.CLAUDE_PROJECT_DIR;
-  } else {
-    projectDir = lastProjectDir;
+  } else if (input && input.session_id && sessionRegistry.has(input.session_id)) {
+    const entry = sessionRegistry.get(input.session_id);
+    entry.lastRequest = new Date().toISOString();
+    projectDir = entry.projectDir;
+  } else if (lastRegisteredSessionId && sessionRegistry.has(lastRegisteredSessionId)) {
+    const entry = sessionRegistry.get(lastRegisteredSessionId);
+    entry.lastRequest = new Date().toISOString();
+    projectDir = entry.projectDir;
+  } else if (process.env.CLAUDE_PROJECT_DIR) {
+    projectDir = process.env.CLAUDE_PROJECT_DIR;
   }
 
   if (!projectDir) {
-    // No project dir available — return empty context
     return {
       projectRoot: null,
       rulesDir: null,
@@ -657,14 +698,27 @@ async function handleRequest(req, res) {
     }
   }
 
+  if (method === 'POST' && url === '/register-session') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (body && body.sessionId && body.projectDir) {
+      const result = registerSession(body.sessionId, body.projectDir);
+      return respond(res, 200, result);
+    }
+    return respond(res, 400, { error: 'sessionId and projectDir required' });
+  }
+
   if (method === 'POST' && url === '/set-project') {
     let body = null;
     try { body = await readBody(req); } catch {}
     if (body && body.projectDir) {
-      lastProjectDir = body.projectDir;
+      deprecatedSetProjectCalls++;
+      const syntheticId = crypto.createHash('md5').update(normalizePath(body.projectDir)).digest('hex').slice(0, 16);
+      const result = registerSession(syntheticId, body.projectDir);
+      return respond(res, 200, { projectDir: result.projectDir, rulesLoaded: result.rulesLoaded });
     }
     const ctx = getRequestContext(null);
-    return respond(res, 200, { projectDir: lastProjectDir, rulesLoaded: ctx.compiledRules.length });
+    return respond(res, 200, { rulesLoaded: ctx.compiledRules.length });
   }
 
   if (method === 'POST' && url === '/pause') {
