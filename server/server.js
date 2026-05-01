@@ -342,8 +342,7 @@ function matchFileCompiled(filePath, entry, projectRoot, rulesData) {
   if (entry.exclRe && entry.exclRe.some(re => re.test(normalized))) return false;
   if (!entry.pathRe || !entry.pathRe.length) return false;
   if (!entry.pathRe.some(re => re.test(normalized))) return false;
-  const enforcement = getEnforcement(entry.rule, rulesData.defaults);
-  if (enforcement === 'block' && entry.contentRe && entry.contentRe.length) {
+  if (entry.contentRe && entry.contentRe.length) {
     try {
         const content = fs.readFileSync(filePath, 'utf8');
         return entry.contentRe.some(re => re.test(content));
@@ -526,9 +525,6 @@ function handleEnforce(input) {
     if (!entry.pathRe || !entry.pathRe.length) return false;
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) return false;
     if (!matchFileCompiled(filePath, entry, ctx.projectRoot, rd)) return false;
-    if (writeContent && entry.contentRe && entry.contentRe.length > 0) {
-      if (!entry.contentRe.some(re => re.test(writeContent))) return false;
-    }
     return { enforcement };
   });
   if (!matches.length) return {};

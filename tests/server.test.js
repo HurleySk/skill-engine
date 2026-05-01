@@ -159,6 +159,17 @@ describe('Enforce Endpoint', () => {
               pathPatterns: ['**/*.config']
             }
           }
+        },
+        'warn-setvariable': {
+          type: 'guardrail',
+          description: 'SetVariable self-reference warning',
+          enforcement: 'warn',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.json'],
+              contentPatterns: ['SetVariable']
+            }
+          }
         }
       }
     });
@@ -187,6 +198,25 @@ describe('Enforce Endpoint', () => {
     assert.equal(hso.hookEventName, 'PreToolUse');
     assert.equal(hso.permissionDecision, 'allow');
     assert.ok(hso.additionalContext.includes('warn-config'), 'additionalContext should mention warn-config');
+  });
+
+  it('returns warn for matching warn guardrail with content pattern', async () => {
+    const jsonFile = path.join(harness.tmpDir, 'pipeline.json');
+    fs.writeFileSync(jsonFile, '{"type": "SetVariable", "name": "Increment"}');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: jsonFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'allow');
+    assert.ok(hso.additionalContext.includes('warn-setvariable'));
+  });
+
+  it('returns empty for warn guardrail with content pattern that does not match file', async () => {
+    const jsonFile = path.join(harness.tmpDir, 'other.json');
+    fs.writeFileSync(jsonFile, '{"type": "Copy", "name": "LoadData"}');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: jsonFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.ok(!hso, 'should not match without SetVariable content');
   });
 
   it('returns empty for non-matching file', async () => {
