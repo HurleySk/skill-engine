@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.4
+
+### Fixes
+
+- File guardrail `contentPatterns` now enforced for `warn` rules, not just `block`. Previously, `warn` rules with `contentPatterns` would match on path patterns alone (ignoring file content), while the secondary check only tested the edit diff text — not the full file. Now `matchFileCompiled` reads the full file for all enforcement levels.
+
 ## 3.2.0
 
 ### Performance
