@@ -40,36 +40,18 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "http",
-            "url": "http://localhost:19750/enforce"
-          }
-        ]
-      },
-      {
         "matcher": "Write|Edit|Bash|PowerShell|NotebookEdit",
         "hooks": [
           {
             "type": "http",
-            "url": "http://localhost:19750/enforce-tool"
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "http",
-            "url": "http://localhost:19750/pre-write"
+            "url": "http://localhost:19750/pre-tool"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Read|Grep|Glob|Write|Edit|Bash|PowerShell|NotebookEdit",
+        "matcher": "Write|Edit|Bash|PowerShell|NotebookEdit",
         "hooks": [
           {
             "type": "http",
