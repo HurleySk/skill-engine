@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.3.6
+
+### Performance
+
+- Consolidate 3 PreToolUse hooks (`/enforce`, `/enforce-tool`, `/pre-write`) into single `/pre-tool` endpoint. Reduces HTTP round-trips from 3 to 1 per Write/Edit call.
+- Narrow PostToolUse matcher from `Read|Grep|Glob|Write|Edit|Bash|PowerShell|NotebookEdit` to `Write|Edit|Bash|PowerShell|NotebookEdit`. Read-only tools (Read, Grep, Glob) no longer trigger post-tool hooks since no current rules use output triggers on those tools.
+
+### Features
+
+- Add `/pre-tool` consolidated handler: calls `handleEnforce`, `handleEnforceTool`, and `handlePreWrite` in sequence, returns the most restrictive result (deny > ask > context-only), and concatenates all `additionalContext` strings.
+- Old endpoints (`/enforce`, `/enforce-tool`, `/pre-write`) remain available for backwards compatibility.
+
 ## 3.3.5
 
 ### Fixes

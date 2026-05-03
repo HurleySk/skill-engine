@@ -559,6 +559,61 @@ let eventsProcessed = 0;
 let lastEvent = null;
 let paused = false;
 
+// --- Consolidated PreToolUse handler ---
+function handlePreTool(input) {
+  // Run all three pre-tool checks and return the most restrictive result.
+  // Priority: deny > ask > context-only > allow (empty).
+  const results = [
+    handleEnforce(input),
+    handleEnforceTool(input),
+    handlePreWrite(input),
+  ];
+
+  let deny = null;
+  let ask = null;
+  const contexts = [];
+
+  for (const r of results) {
+    const hso = r && r.hookSpecificOutput;
+    if (!hso) continue;
+    const decision = hso.permissionDecision;
+    if (decision === 'deny' && !deny) {
+      deny = r;
+    } else if (decision === 'ask' && !ask) {
+      ask = r;
+    }
+    if (hso.additionalContext) {
+      contexts.push(hso.additionalContext);
+    }
+  }
+
+  // Deny beats everything
+  if (deny) {
+    const out = { ...deny.hookSpecificOutput };
+    if (contexts.length) out.additionalContext = contexts.join('\n');
+    return { hookSpecificOutput: out };
+  }
+
+  // Ask beats allow/context-only
+  if (ask) {
+    const out = { ...ask.hookSpecificOutput };
+    if (contexts.length) out.additionalContext = contexts.join('\n');
+    return { hookSpecificOutput: out };
+  }
+
+  // Context-only (no decision override)
+  if (contexts.length) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext: contexts.join('\n'),
+      }
+    };
+  }
+
+  return {};
+}
+
 // --- Route table ---
 const routes = {
   '/activate':     { handler: handleActivate,    event: 'activate' },
@@ -566,6 +621,7 @@ const routes = {
   '/enforce-tool': { handler: handleEnforceTool, event: 'enforce-tool' },
   '/post-tool':    { handler: handlePostTool,    event: 'post-tool' },
   '/pre-write':    { handler: handlePreWrite,    event: 'pre-write' },
+  '/pre-tool':     { handler: handlePreTool,     event: 'pre-tool' },
   '/stop':         { handler: handleStop,        event: 'stop' },
 };
 

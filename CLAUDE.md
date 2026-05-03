@@ -15,7 +15,7 @@ Server tests spawn real processes on ports 19751-19771. Ensure those ports are f
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume` (`/set-project` deprecated)
+- `server/server.js` — HTTP server: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume` (`/set-project` deprecated)
 - `server/pre-write-safety.js` — production safety validation for task files and security model configs
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
@@ -49,12 +49,12 @@ Learned rules are auto-stamped with `sourceRepo` (the normalized `CLAUDE_PROJECT
 
 ## Performance
 
-The server runs on mutation tool calls (`PreToolUse` for `Edit|Write|Bash|PowerShell|NotebookEdit`), every prompt (`UserPromptSubmit`), and read-only tools for output triggers (`PostToolUse` for `Read|Grep|Glob|Write|Edit|Bash|PowerShell|NotebookEdit`). PreToolUse matchers filter read-only tools at the harness level. All changes must be evaluated for latency impact:
+The server runs on mutation tool calls (`PreToolUse` via consolidated `/pre-tool` for `Write|Edit|Bash|PowerShell|NotebookEdit`), every prompt (`UserPromptSubmit`), and mutation tools for output triggers (`PostToolUse` for `Write|Edit|Bash|PowerShell|NotebookEdit`). A single PreToolUse hook replaces the previous 3 separate hooks, reducing HTTP round-trips from 3 to 1. All changes must be evaluated for latency impact:
 
 - Rules are compiled on first access and cached; `fs.statSync` (~0.1ms) on each request checks if rule files changed
 - No recompilation unless file mtime actually changes
 - `/health` tracks `avgResponseTimeMs` — target is under 25ms per request
-- PostToolUse hooks fire on read-only tools for output trigger rules. The `hasOutputTriggerRules` fast-path returns empty immediately when no output triggers exist
+- PostToolUse hooks fire on mutation tools only. The `hasOutputTriggerRules` fast-path returns empty immediately when no output triggers exist
 - Multi-key rule cache (keyed by rulesDir) eliminates recompilation when switching projects
 
 ## Windows Compatibility
