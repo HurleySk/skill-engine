@@ -43,7 +43,8 @@ function getPriority(rule, defaults) {
   return rule.priority || (defaults && defaults.priority) || 'medium';
 }
 function getEnforcement(rule, defaults) {
-  return rule.enforcement || (defaults && defaults.enforcement) || 'suggest';
+  const raw = rule.enforcement || (defaults && defaults.enforcement) || 'suggest';
+  return raw === 'approve' ? 'ask' : raw;
 }
 
 // --- RuleCache class (multi-key, mtime-based, immutable snapshots) ---
