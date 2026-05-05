@@ -393,6 +393,26 @@ function recordSessionOnce(session, matches) {
   }
 }
 
+function buildEnforcementResponse(matches) {
+  if (!matches.length) return {};
+  sortBlockFirst(matches);
+
+  const blockMatch = matches.find(m => m.enforcement === 'block');
+  if (blockMatch) {
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
+      permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name) } };
+  }
+  const askMatch = matches.find(m => m.enforcement === 'ask');
+  if (askMatch) {
+    const reason = askMatch.rule.askMessage || askMatch.rule.blockMessage || ('Requires approval: ' + askMatch.name);
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } };
+  }
+  const warnings = matches.filter(m => m.enforcement === 'warn').map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
+  const joined = warnings.join('\n');
+  if (joined) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: joined } };
+  return {};
+}
+
 // --- Activate handler ---
 function handleActivate(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
@@ -446,36 +466,7 @@ function handleEnforceTool(input) {
     if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
     return { enforcement };
   });
-  if (!matches.length) return {};
-  sortBlockFirst(matches);
-
-  const blockMatch = matches.find(m => m.enforcement === 'block');
-  if (blockMatch) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name)
-      }
-    };
-  }
-  const askMatch = matches.find(m => m.enforcement === 'ask');
-  if (askMatch) {
-    const reason = askMatch.rule.askMessage || askMatch.rule.blockMessage || ('Requires approval: ' + askMatch.name);
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: reason
-      }
-    };
-  }
-  const warnings = matches.filter(m => m.enforcement === 'warn').map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
-  const joined = warnings.join('\n');
-  if (joined) {
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: joined } };
-  }
-  return {};
+  return buildEnforcementResponse(matches);
 }
 
 // --- Post-tool handler (PostToolUse) ---
@@ -541,36 +532,7 @@ function handleEnforce(input) {
     if (!matchFileCompiled(filePath, entry, ctx.projectRoot, rd)) return false;
     return { enforcement };
   });
-  if (!matches.length) return {};
-  sortBlockFirst(matches);
-
-  const blockMatch = matches.find(m => m.enforcement === 'block');
-  if (blockMatch) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name)
-      }
-    };
-  }
-  const askMatch = matches.find(m => m.enforcement === 'ask');
-  if (askMatch) {
-    const reason = askMatch.rule.askMessage || askMatch.rule.blockMessage || ('Requires approval: ' + askMatch.name);
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: reason
-      }
-    };
-  }
-  const warnings = matches.filter(m => m.enforcement === 'warn').map(m => '⚠️ ' + m.name + ': ' + m.rule.description);
-  const joined = warnings.join('\n');
-  if (joined) {
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: joined } };
-  }
-  return {};
+  return buildEnforcementResponse(matches);
 }
 
 function handlePreWrite(input) {
