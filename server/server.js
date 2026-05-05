@@ -373,10 +373,13 @@ function sortByPriority(matches) {
   matches.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
 }
 
+const ENFORCEMENT_ORDER = { block: 0, ask: 1, warn: 2 };
+
 function sortBlockFirst(matches) {
   matches.sort((a, b) => {
-    if (a.enforcement === 'block' && b.enforcement !== 'block') return -1;
-    if (a.enforcement !== 'block' && b.enforcement === 'block') return 1;
+    const aO = ENFORCEMENT_ORDER[a.enforcement] ?? 2;
+    const bO = ENFORCEMENT_ORDER[b.enforcement] ?? 2;
+    if (aO !== bO) return aO - bO;
     return (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2);
   });
 }
@@ -437,7 +440,7 @@ function handleEnforceTool(input) {
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
     if (entry.rule.type !== 'guardrail') return false;
     const enforcement = getEnforcement(entry.rule, rd.defaults);
-    if (enforcement !== 'block' && enforcement !== 'warn') return false;
+    if (enforcement !== 'block' && enforcement !== 'ask' && enforcement !== 'warn') return false;
     if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) return false;
     if (entry.toolTriggerNamesSet && !toolName) return false;
     if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
@@ -453,6 +456,17 @@ function handleEnforceTool(input) {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name)
+      }
+    };
+  }
+  const askMatch = matches.find(m => m.enforcement === 'ask');
+  if (askMatch) {
+    const reason = askMatch.rule.askMessage || askMatch.rule.blockMessage || ('Requires approval: ' + askMatch.name);
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'ask',
+        permissionDecisionReason: reason
       }
     };
   }
@@ -521,7 +535,7 @@ function handleEnforce(input) {
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
     if (entry.rule.type !== 'guardrail') return false;
     const enforcement = getEnforcement(entry.rule, rd.defaults);
-    if (enforcement !== 'block' && enforcement !== 'warn') return false;
+    if (enforcement !== 'block' && enforcement !== 'ask' && enforcement !== 'warn') return false;
     if (!entry.pathRe || !entry.pathRe.length) return false;
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) return false;
     if (!matchFileCompiled(filePath, entry, ctx.projectRoot, rd)) return false;
@@ -537,6 +551,17 @@ function handleEnforce(input) {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: blockMatch.rule.blockMessage || ('Blocked by rule: ' + blockMatch.name)
+      }
+    };
+  }
+  const askMatch = matches.find(m => m.enforcement === 'ask');
+  if (askMatch) {
+    const reason = askMatch.rule.askMessage || askMatch.rule.blockMessage || ('Requires approval: ' + askMatch.name);
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'ask',
+        permissionDecisionReason: reason
       }
     };
   }

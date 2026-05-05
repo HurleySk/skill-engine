@@ -1603,3 +1603,127 @@ describe('PostToolUse on Read-Only Tools', () => {
     assert.ok(!res.body.hookSpecificOutput, 'should not match Bash');
   });
 });
+
+describe('Enforcement: ask (approval pattern)', () => {
+  let harness;
+  const PORT = 19770;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'ask-prod-config': {
+          type: 'guardrail',
+          description: 'Production config requires approval',
+          enforcement: 'ask',
+          askMessage: 'This edits production config. Approve?',
+          triggers: {
+            file: {
+              pathPatterns: ['**/prod*.json']
+            }
+          }
+        },
+        'block-secrets': {
+          type: 'guardrail',
+          description: 'Never edit secrets',
+          enforcement: 'block',
+          blockMessage: 'Secrets file is read-only',
+          triggers: {
+            file: {
+              pathPatterns: ['**/secrets.*']
+            }
+          }
+        },
+        'ask-force-push': {
+          type: 'guardrail',
+          description: 'Force push requires approval',
+          enforcement: 'ask',
+          askMessage: 'Force push detected. Approve?',
+          triggers: {
+            tool: {
+              toolNames: ['Bash'],
+              inputPatterns: ['push\\s+(--force|-f)']
+            }
+          }
+        },
+        'warn-rm': {
+          type: 'guardrail',
+          description: 'Be careful with rm',
+          enforcement: 'warn',
+          triggers: {
+            tool: {
+              toolNames: ['Bash'],
+              inputPatterns: ['\\brm\\b']
+            }
+          }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('returns ask for file matching ask-enforcement rule', async () => {
+    const prodFile = path.join(harness.tmpDir, 'prod-db.json');
+    fs.writeFileSync(prodFile, '{}');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: prodFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.hookEventName, 'PreToolUse');
+    assert.equal(hso.permissionDecision, 'ask');
+    assert.equal(hso.permissionDecisionReason, 'This edits production config. Approve?');
+  });
+
+  it('block takes priority over ask when both match', async () => {
+    const secretsProd = path.join(harness.tmpDir, 'secrets.json');
+    fs.writeFileSync(secretsProd, '{}');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: secretsProd } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'deny');
+    assert.equal(hso.permissionDecisionReason, 'Secrets file is read-only');
+  });
+
+  it('returns ask for tool-trigger matching ask-enforcement rule', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force origin main' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'ask');
+    assert.equal(hso.permissionDecisionReason, 'Force push detected. Approve?');
+  });
+
+  it('ask takes priority over warn for same tool', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf && git push --force' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'ask');
+  });
+
+  it('warn still works when no ask rules match', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /tmp/old' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'allow');
+    assert.ok(hso.additionalContext.includes('warn-rm'));
+  });
+
+  it('consolidated /pre-tool returns ask from enforce-tool subroute', async () => {
+    const res = await request('POST', '/pre-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force origin main' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'ask');
+  });
+});
