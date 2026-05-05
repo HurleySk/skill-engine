@@ -40,7 +40,7 @@ Based on the lesson and conversation context, infer:
 
 1. **Rule name**: Slugified from the lesson (e.g., `parameterized-queries-sql`). Lowercase, hyphens, no special characters.
 2. **Type**: Almost always `guardrail` — the user wants enforcement. Use `domain` for guidance-only rules (PostToolUse, Stop).
-3. **Enforcement**: Default to `warn` unless the user explicitly says "block" or "prevent." Use `ask` when the user wants approval-before-proceeding (prompts the user, they can approve or deny). PostToolUse and Stop rules cannot block or ask — use `suggest` or `warn`.
+3. **Enforcement**: Default to `warn` unless the user explicitly says "block" or "prevent." Use `ask` (or `approve` — treated identically) when the user wants approval-before-proceeding (prompts the user, they can approve or deny). PostToolUse and Stop rules cannot block or ask — use `suggest` or `warn`.
 4. **Priority**: Default to `medium`. Use `high` if emphasized. Use `critical` only for absolute statements.
 5. **Triggers** — choose the right trigger namespace:
    - **`triggers.file`** — for file-editing tools (Edit/Write/NotebookEdit). Derive `pathPatterns` from file extensions or directories in context. If specific content patterns mentioned, derive `contentPatterns`. Keep patterns relative — use `**/*.sql` not absolute paths. **CRITICAL (Windows):** All path patterns must use forward slashes. Never write backslashes.

@@ -1624,6 +1624,17 @@ describe('Enforcement: ask (approval pattern)', () => {
             }
           }
         },
+        'approve-alias-rule': {
+          type: 'guardrail',
+          description: 'Approve alias test',
+          enforcement: 'approve',
+          askMessage: 'Approve alias fired',
+          triggers: {
+            file: {
+              pathPatterns: ['**/needs-approval.*']
+            }
+          }
+        },
         'block-secrets': {
           type: 'guardrail',
           description: 'Never edit secrets',
@@ -1725,5 +1736,15 @@ describe('Enforcement: ask (approval pattern)', () => {
     assert.equal(res.status, 200);
     const hso = res.body.hookSpecificOutput;
     assert.equal(hso.permissionDecision, 'ask');
+  });
+
+  it('enforcement "approve" is treated as alias for "ask"', async () => {
+    const approveFile = path.join(harness.tmpDir, 'needs-approval.json');
+    fs.writeFileSync(approveFile, '{}');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: approveFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'ask');
+    assert.equal(hso.permissionDecisionReason, 'Approve alias fired');
   });
 });
