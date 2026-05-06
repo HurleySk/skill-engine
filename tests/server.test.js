@@ -1748,3 +1748,399 @@ describe('Enforcement: ask (approval pattern)', () => {
     assert.equal(hso.permissionDecisionReason, 'Approve alias fired');
   });
 });
+
+describe('Session Context Tracking', () => {
+  let harness;
+  const PORT = 19772;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'w3-inv': {
+          type: 'domain',
+          description: 'W3 investigation skill',
+          skillPath: './w3-investigation/SKILL.md',
+          sessionContext: 'w3-investigation',
+          triggers: { prompt: { keywords: ['investigate-ctx'] } },
+          skipConditions: { sessionOnce: true }
+        },
+        'autocreate-trap': {
+          type: 'guardrail',
+          enforcement: 'warn',
+          description: 'autoCreate drops NULL columns',
+          triggers: { prompt: { keywords: ['autoCreate-ctx'] } },
+          contextEnhancement: {
+            'w3-investigation': 'ENHANCED: verify staging DDL includes all FetchXML attributes.'
+          }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('GET /health shows sessionContexts after skill activation', async () => {
+    await request('POST', '/activate', {
+      prompt: 'investigate-ctx data issue',
+      session_id: 'ctx-sess-1'
+    }, PORT);
+    const health = await request('GET', '/health', null, PORT);
+    assert.ok(health.body.sessionContexts, 'should have sessionContexts');
+    assert.ok(health.body.sessionContexts['ctx-sess-1']);
+    assert.ok(health.body.sessionContexts['ctx-sess-1'].includes('w3-investigation'));
+  });
+
+  it('activate returns enhanced message when session has matching context', async () => {
+    await request('POST', '/activate', {
+      prompt: 'investigate-ctx data issue',
+      session_id: 'ctx-sess-2'
+    }, PORT);
+    const res = await request('POST', '/activate', {
+      prompt: 'autoCreate-ctx column trap',
+      session_id: 'ctx-sess-2'
+    }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('ENHANCED'), 'should include context-enhanced message');
+  });
+
+  it('activate returns base message when session has no matching context', async () => {
+    const res = await request('POST', '/activate', {
+      prompt: 'autoCreate-ctx column trap',
+      session_id: 'ctx-sess-no-context'
+    }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('ENHANCED'), 'should NOT include context-enhanced message');
+  });
+});
+
+describe('Context Boost', () => {
+  let harness;
+  const PORT = 19773;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'boost-rule': {
+          type: 'domain',
+          description: 'Rule with context boost',
+          triggers: { prompt: { keywords: ['investigate-boost'] } },
+          contextBoost: {
+            patterns: ['alm_workset', 'alm_fercbusinessunit', 'Wave3_.*_Staging'],
+            weight: 0.3
+          }
+        },
+        'no-boost-rule': {
+          type: 'domain',
+          description: 'Rule without context boost',
+          triggers: { prompt: { keywords: ['no-boost-only'] } }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('keyword match alone fires (score 1.0)', async () => {
+    const res = await request('POST', '/activate', { prompt: 'investigate-boost something' }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('boost-rule'));
+  });
+
+  it('context boost alone does not fire with fewer than threshold patterns', async () => {
+    const res = await request('POST', '/activate', { prompt: 'fix the data in alm_workset' }, PORT);
+    assert.ok(!res.body.hookSpecificOutput || !res.body.hookSpecificOutput.additionalContext.includes('boost-rule'));
+  });
+
+  it('three boost patterns alone score 0.9 — below threshold, does not fire', async () => {
+    const res = await request('POST', '/activate', {
+      prompt: 'fix the data in alm_workset and alm_fercbusinessunit and Wave3_Something_Staging'
+    }, PORT);
+    assert.ok(!res.body.hookSpecificOutput || !res.body.hookSpecificOutput.additionalContext.includes('boost-rule'),
+      'three patterns at 0.3 each = 0.9, below 1.0 threshold');
+  });
+
+  it('keyword match + boost patterns combine scores', async () => {
+    const res = await request('POST', '/activate', {
+      prompt: 'investigate-boost in alm_workset context'
+    }, PORT);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('boost-rule'));
+  });
+
+  it('rule without contextBoost is unaffected', async () => {
+    const res = await request('POST', '/activate', {
+      prompt: 'alm_workset alm_fercbusinessunit Wave3_X_Staging Wave3_Y_Staging'
+    }, PORT);
+    const ctx = res.body.hookSpecificOutput ? res.body.hookSpecificOutput.additionalContext : '';
+    assert.ok(!ctx.includes('no-boost-rule'));
+  });
+});
+
+describe('Checklist Enforcement', () => {
+  let harness;
+  const PORT = 19774;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'w3-inv': {
+          type: 'domain',
+          description: 'W3 investigation',
+          sessionContext: 'w3-investigation',
+          skillPath: './w3-investigation/SKILL.md',
+          triggers: { prompt: { keywords: ['investigate-check'] } },
+          skipConditions: { sessionOnce: true }
+        }
+      }
+    }, {
+      extraFiles: {
+        '.claude/skills/w3-investigation/checklist.json': JSON.stringify({
+          context: 'w3-investigation',
+          items: [
+            {
+              name: 'Verified pipeline ran',
+              verification: 'adf-query-runs|pipeline.*(Succeeded|Failed)',
+              tools: ['Write'],
+              severity: 'required',
+              message: 'You have not verified pipeline run status yet'
+            },
+            {
+              name: 'Queried source data',
+              verification: 'ferconlineprod|onprem.*prod',
+              tools: ['Write'],
+              severity: 'required',
+              message: 'Query source (ferconlineprod) before diagnosing'
+            }
+          ]
+        })
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('activating a skill loads checklist and context for the session', async () => {
+    await request('POST', '/activate', {
+      prompt: 'investigate-check data',
+      session_id: 'check-sess-1'
+    }, PORT);
+    const health = await request('GET', '/health', null, PORT);
+    const contexts = health.body.sessionContexts || {};
+    assert.ok(contexts['check-sess-1']);
+  });
+
+  it('PostToolUse satisfies checklist items when tool and pattern match', async () => {
+    await request('POST', '/activate', {
+      prompt: 'investigate-check data',
+      session_id: 'check-sess-2'
+    }, PORT);
+    await request('POST', '/post-tool', {
+      tool_name: 'Write',
+      tool_input: { file_path: '/tmp/tasks/diag.json', content: '{"steps":[{"type":"adf-query-runs"}]}' },
+      tool_output: 'File written',
+      session_id: 'check-sess-2'
+    }, PORT);
+    const stop = await request('POST', '/stop', { session_id: 'check-sess-2' }, PORT);
+    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
+    assert.ok(!ctx.includes('pipeline run status'), 'satisfied item should not warn');
+    assert.ok(ctx.includes('ferconlineprod'), 'unsatisfied required item should warn');
+  });
+
+  it('PostToolUse does not satisfy when tool type does not match', async () => {
+    await request('POST', '/activate', {
+      prompt: 'investigate-check data',
+      session_id: 'check-sess-3'
+    }, PORT);
+    await request('POST', '/post-tool', {
+      tool_name: 'Read',
+      tool_output: 'adf-query-runs pipeline Succeeded',
+      session_id: 'check-sess-3'
+    }, PORT);
+    const stop = await request('POST', '/stop', { session_id: 'check-sess-3' }, PORT);
+    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
+    assert.ok(ctx.includes('pipeline run status'), 'wrong tool type should not satisfy');
+  });
+
+  it('stop with no checklist context returns normal stop output', async () => {
+    const stop = await request('POST', '/stop', { session_id: 'no-checklist-sess' }, PORT);
+    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
+    assert.ok(!ctx.includes('pipeline run status'));
+    assert.ok(!ctx.includes('ferconlineprod'));
+  });
+});
+
+describe('Subagent Briefing', () => {
+  let harness;
+  const PORT = 19775;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'warn-rule': {
+          type: 'guardrail',
+          enforcement: 'warn',
+          priority: 'high',
+          description: 'autoCreate drops NULL columns',
+          guidance: 'Use explicit TabularTranslator mappings.',
+          triggers: { prompt: { keywords: ['autoCreate'] } }
+        }
+      }
+    }, {
+      extraFiles: {
+        '.claude/skills/w3-investigation/quick-ref.md': '# Quick Ref\n\n| Factory | env |\n|---|---|\n| dev1 | dev |',
+        '.claude/skills/w3-investigation/known-issues.md': '# Known Issues\n\n## NULL owningbusinessunit\nCorrupted records.',
+        '.claude/skills/w3-pipeline-dev/quick-ref.md': '# Quick Ref\n\nSame content.',
+        '.claude/skills/w3-pipeline-dev/patterns.md': '# Patterns\n\n## Standard Load\nAnnotated example.',
+        '.claude/skills/w3-testing/quick-ref.md': '# Quick Ref\n\nTest ref.',
+        '.claude/skills/w3-testing/assertion-ref.md': '# Assertion Ref\n\nassert-match details.'
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('GET /briefing?context=w3-investigation returns compiled markdown', async () => {
+    const res = await request('GET', '/briefing?context=w3-investigation', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.briefing, 'should have briefing field');
+    assert.ok(res.body.briefing.includes('Quick Ref'), 'should include quick-ref content');
+    assert.ok(res.body.briefing.includes('Known Issues'), 'should include known-issues content');
+    assert.equal(res.body.context, 'w3-investigation');
+  });
+
+  it('GET /briefing?context=w3-pipeline-dev returns pipeline patterns', async () => {
+    const res = await request('GET', '/briefing?context=w3-pipeline-dev', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.briefing.includes('Patterns'));
+    assert.ok(res.body.briefing.includes('Quick Ref'));
+  });
+
+  it('GET /briefing?context=w3-testing returns assertion reference', async () => {
+    const res = await request('GET', '/briefing?context=w3-testing', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.briefing.includes('Assertion Ref'));
+  });
+
+  it('GET /briefing includes active guardrails', async () => {
+    const res = await request('GET', '/briefing?context=w3-investigation', null, PORT);
+    assert.ok(res.body.briefing.includes('warn-rule'), 'should include guardrail name');
+    assert.ok(res.body.briefing.includes('TabularTranslator'), 'should include guardrail guidance');
+  });
+
+  it('GET /briefing with unknown context returns 404', async () => {
+    const res = await request('GET', '/briefing?context=nonexistent', null, PORT);
+    assert.equal(res.status, 404);
+  });
+
+  it('GET /briefing without context param returns 400', async () => {
+    const res = await request('GET', '/briefing', null, PORT);
+    assert.equal(res.status, 400);
+  });
+});
+
+describe('Full W3 Session Flow', () => {
+  let harness;
+  const PORT = 19776;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'w3-inv': {
+          type: 'domain',
+          description: 'W3 investigation',
+          sessionContext: 'w3-investigation',
+          skillPath: './w3-investigation/SKILL.md',
+          triggers: { prompt: { keywords: ['investigate-flow'] } },
+          skipConditions: { sessionOnce: true },
+          contextBoost: {
+            patterns: ['alm_workset', 'Wave3_.*_Staging'],
+            weight: 0.3
+          }
+        },
+        'autocreate-warn': {
+          type: 'guardrail',
+          enforcement: 'warn',
+          description: 'autoCreate column trap',
+          guidance: 'Use explicit TabularTranslator mappings.',
+          triggers: { prompt: { keywords: ['autoCreate-flow'] } },
+          contextEnhancement: {
+            'w3-investigation': 'ENHANCED: verify staging DDL includes all FetchXML attributes.'
+          }
+        }
+      }
+    }, {
+      extraFiles: {
+        '.claude/skills/w3-investigation/quick-ref.md': '# Quick Ref\n\nFactory table here.',
+        '.claude/skills/w3-investigation/known-issues.md': '# Known Issues\n\nNULL owningbusinessunit.',
+        '.claude/skills/w3-investigation/checklist.json': JSON.stringify({
+          context: 'w3-investigation',
+          items: [
+            {
+              name: 'Source queried',
+              verification: 'ferconlineprod',
+              tools: ['Write'],
+              severity: 'required',
+              message: 'Query source (ferconlineprod) first'
+            }
+          ]
+        })
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('complete session: activate → context → enhanced guardrail → checklist warn on stop', async () => {
+    const sid = 'flow-sess-1';
+    const activate = await request('POST', '/activate', {
+      prompt: 'investigate-flow data issue', session_id: sid
+    }, PORT);
+    assert.ok(activate.body.hookSpecificOutput);
+    assert.ok(activate.body.hookSpecificOutput.additionalContext.includes('w3-inv'));
+
+    const guardrail = await request('POST', '/activate', {
+      prompt: 'autoCreate-flow table rebuild', session_id: sid
+    }, PORT);
+    assert.ok(guardrail.body.hookSpecificOutput);
+    assert.ok(guardrail.body.hookSpecificOutput.additionalContext.includes('ENHANCED'));
+
+    const stop = await request('POST', '/stop', { session_id: sid }, PORT);
+    assert.ok(stop.body.hookSpecificOutput);
+    assert.ok(stop.body.hookSpecificOutput.additionalContext.includes('ferconlineprod'));
+  });
+
+  it('complete session: activate → satisfy checklist → clean stop', async () => {
+    const sid = 'flow-sess-2';
+    await request('POST', '/activate', {
+      prompt: 'investigate-flow data issue', session_id: sid
+    }, PORT);
+    await request('POST', '/post-tool', {
+      tool_name: 'Write',
+      tool_input: { file_path: '/tmp/tasks/diag.json', content: '{"steps":[{"type":"sql-query","connection":"ferconlineprod"}]}' },
+      tool_output: 'File written', session_id: sid
+    }, PORT);
+    const stop = await request('POST', '/stop', { session_id: sid }, PORT);
+    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
+    assert.ok(!ctx.includes('ferconlineprod'), 'satisfied checklist item should not warn');
+  });
+
+  it('briefing endpoint returns compiled context for investigation', async () => {
+    const res = await request('GET', '/briefing?context=w3-investigation', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.briefing.includes('Quick Ref'));
+    assert.ok(res.body.briefing.includes('Known Issues'));
+    assert.ok(res.body.briefing.includes('TabularTranslator'), 'should include guardrail');
+  });
+});

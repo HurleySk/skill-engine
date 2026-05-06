@@ -148,8 +148,18 @@ const ruleCache = new RuleCache();
 // --- Session Registry (replaces lastProjectDir) ---
 const crypto = require('crypto');
 const sessionRegistry = new Map();
+const sessionContexts = new Map(); // sessionId → Set of context tags
+const sessionChecklists = new Map(); // sessionId → Map<itemName, {satisfied, item}>
+const checklistCache = new Map(); // rulesDir|context → items array
 let lastRegisteredSessionId = null;
 let deprecatedSetProjectCalls = 0;
+
+// --- Briefing content map ---
+const BRIEFING_FILES = {
+  'w3-investigation': ['quick-ref.md', 'known-issues.md'],
+  'w3-pipeline-dev': ['quick-ref.md', 'patterns.md'],
+  'w3-testing': ['quick-ref.md', 'assertion-ref.md'],
+};
 
 function registerSession(sessionId, projectDir) {
   const normalizedDir = normalizePath(projectDir);
@@ -179,6 +189,57 @@ function registerSession(sessionId, projectDir) {
     rulesLoaded: cached.compiledRules.length,
     errors,
   };
+}
+
+// --- Checklist loader ---
+function loadChecklist(rulesDir, context) {
+  const cacheKey = rulesDir + '|' + context;
+  const cached = checklistCache.get(cacheKey);
+  if (cached) return cached;
+  const checklistPath = path.join(rulesDir, context, 'checklist.json');
+  try {
+    const data = JSON.parse(fs.readFileSync(checklistPath, 'utf8'));
+    if (data.context === context && Array.isArray(data.items)) {
+      const items = data.items.map(item => ({
+        name: item.name,
+        verificationRe: new RegExp(item.verification, 'i'),
+        tools: new Set(item.tools || []),
+        severity: item.severity || 'recommended',
+        message: item.message || item.name,
+      }));
+      checklistCache.set(cacheKey, items);
+      return items;
+    }
+  } catch {}
+  return null;
+}
+
+// --- Briefing builder ---
+function buildBriefing(rulesDir, context) {
+  const fileList = BRIEFING_FILES[context];
+  if (!fileList) return null;
+  const sections = ['# Subagent Briefing: ' + context, ''];
+  for (const fileName of fileList) {
+    const filePath = path.join(rulesDir, context, fileName);
+    try {
+      sections.push(fs.readFileSync(filePath, 'utf8').trim());
+      sections.push('');
+    } catch {}
+  }
+  const cachedRules = ruleCache.getRules(rulesDir);
+  if (cachedRules.compiledRules.length) {
+    const guardrails = [];
+    for (const entry of cachedRules.compiledRules) {
+      if (entry.rule.type !== 'guardrail') continue;
+      const guidance = entry.rule.guidance || entry.rule.description;
+      if (!guidance) continue;
+      guardrails.push('- **' + entry.name + ':** ' + guidance);
+    }
+    if (guardrails.length) {
+      sections.push('## Active Guardrails', '', guardrails.join('\n'), '');
+    }
+  }
+  return sections.join('\n');
 }
 
 // --- Per-request context helper ---
@@ -271,6 +332,13 @@ function compileRules(data) {
     if (rule.hookEvents && Array.isArray(rule.hookEvents)) {
       entry.hookEventsSet = new Set(rule.hookEvents);
     }
+    if (rule.contextBoost) {
+      entry.boostWeight = rule.contextBoost.weight || 0.3;
+      entry.boostRe = (rule.contextBoost.patterns || []).reduce((acc, pat) => {
+        try { acc.push(new RegExp(pat, 'i')); } catch {}
+        return acc;
+      }, []);
+    }
     compiled.push(entry);
   }
 
@@ -304,6 +372,14 @@ function cleanStaleSessions() {
       if (lastRegisteredSessionId === id) lastRegisteredSessionId = null;
     }
   }
+  for (const [id] of sessionContexts) {
+    const reg = sessionRegistry.get(id);
+    if (!reg || reg.lastRequest < cutoff) sessionContexts.delete(id);
+  }
+  for (const [id] of sessionChecklists) {
+    const reg = sessionRegistry.get(id);
+    if (!reg || reg.lastRequest < cutoff) sessionChecklists.delete(id);
+  }
 }
 
 const cleanupInterval = setInterval(cleanStaleSessions, 5 * 60 * 1000);
@@ -328,6 +404,21 @@ function matchPromptCompiled(prompt, entry) {
   if (entry.keywordsLower && entry.keywordsLower.some(kw => lower.includes(kw))) return true;
   if (entry.intentRe && entry.intentRe.some(re => re.test(prompt))) return true;
   return false;
+}
+
+function matchPromptWithBoost(prompt, entry) {
+  const lower = prompt.toLowerCase();
+  let score = 0;
+  if (entry.keywordsLower && entry.keywordsLower.some(kw => lower.includes(kw))) score = 1.0;
+  else if (entry.intentRe && entry.intentRe.some(re => re.test(prompt))) score = 1.0;
+  if (entry.boostRe && entry.boostRe.length) {
+    let boostHits = 0;
+    for (const re of entry.boostRe) {
+      if (re.test(prompt)) boostHits++;
+    }
+    score += Math.min(boostHits * entry.boostWeight, 1.0);
+  }
+  return score >= 1.0;
 }
 
 function matchFileCompiled(filePath, entry, projectRoot, rulesData) {
@@ -423,13 +514,42 @@ function handleActivate(input) {
   const session = getSession(input.session_id, ctx.projectRoot);
 
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
-    if (!entry.keywordsLower && !entry.intentRe) return false;
-    if (!matchPromptCompiled(prompt, entry)) return false;
+    if (!entry.keywordsLower && !entry.intentRe && !entry.boostRe) return false;
+    if (!matchPromptWithBoost(prompt, entry)) return false;
     return {};
   });
   if (!matches.length) return {};
   sortByPriority(matches);
   recordSessionOnce(session, matches);
+
+  // Set session context and initialize checklists
+  if (input.session_id) {
+    for (const m of matches) {
+      if (m.rule.sessionContext) {
+        let ctxSet = sessionContexts.get(input.session_id);
+        if (!ctxSet) {
+          ctxSet = new Set();
+          sessionContexts.set(input.session_id, ctxSet);
+        }
+        ctxSet.add(m.rule.sessionContext);
+        if (ctx.rulesDir) {
+          const items = loadChecklist(ctx.rulesDir, m.rule.sessionContext);
+          if (items) {
+            let state = sessionChecklists.get(input.session_id);
+            if (!state) {
+              state = new Map();
+              sessionChecklists.set(input.session_id, state);
+            }
+            for (const item of items) {
+              if (!state.has(item.name)) {
+                state.set(item.name, { satisfied: false, item });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
   const count = matches.length;
   const lines = [
@@ -440,6 +560,16 @@ function handleActivate(input) {
     const typeLabel = m.rule.type === 'guardrail' ? ' (guardrail)' : '';
     lines.push('[' + m.priority.toUpperCase() + '] ' + m.name + typeLabel);
     lines.push('  ' + m.rule.description);
+    if (m.rule.contextEnhancement && input.session_id) {
+      const ctxSet = sessionContexts.get(input.session_id);
+      if (ctxSet) {
+        for (const ctxTag of ctxSet) {
+          if (m.rule.contextEnhancement[ctxTag]) {
+            lines.push('  ⚡ ' + m.rule.contextEnhancement[ctxTag]);
+          }
+        }
+      }
+    }
     if (m.rule.skillPath) lines.push('  → Read: ' + m.rule.skillPath);
     lines.push('');
   }
@@ -474,11 +604,25 @@ function handleEnforceTool(input) {
 function handlePostTool(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const ctx = getRequestContext(input);
-  if (!ctx.hasOutputTriggerRules) return {};
   const toolName = input && input.tool_name;
   const toolOutput = input && input.tool_output;
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
-  const session = getSession(input && input.session_id, ctx.projectRoot);
+
+  // Track checklist satisfaction
+  const sid = input && input.session_id;
+  if (sid && sessionChecklists.has(sid)) {
+    const state = sessionChecklists.get(sid);
+    const inputContent = input.tool_input ? JSON.stringify(input.tool_input) : '';
+    const combinedContent = inputContent + ' ' + outputStr;
+    for (const [, entry] of state) {
+      if (entry.satisfied) continue;
+      if (entry.item.tools.size && !entry.item.tools.has(toolName)) continue;
+      if (entry.item.verificationRe.test(combinedContent)) entry.satisfied = true;
+    }
+  }
+
+  if (!ctx.hasOutputTriggerRules) return {};
+  const session = getSession(sid, ctx.projectRoot);
 
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
     if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
@@ -499,18 +643,30 @@ function handlePostTool(input) {
 function handleStop(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const ctx = getRequestContext(input);
-  if (!ctx.hasStopRules) return {};
   const session = getSession(input && input.session_id, ctx.projectRoot);
+  const lines = [];
 
-  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
-    if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) return false;
-    return {};
-  });
-  if (!matches.length) return {};
-  sortByPriority(matches);
-  recordSessionOnce(session, matches);
+  if (ctx.hasStopRules) {
+    const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+      if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) return false;
+      return {};
+    });
+    sortByPriority(matches);
+    recordSessionOnce(session, matches);
+    lines.push(...matches.map(m => m.rule.guidance || m.rule.description));
+  }
 
-  const lines = matches.map(m => m.rule.guidance || m.rule.description);
+  const sid = input && input.session_id;
+  if (sid && sessionChecklists.has(sid)) {
+    const state = sessionChecklists.get(sid);
+    for (const [, entry] of state) {
+      if (!entry.satisfied && entry.item.severity === 'required') {
+        lines.push('⚠️ Checklist: ' + entry.item.message);
+      }
+    }
+  }
+
+  if (!lines.length) return {};
   return { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: lines.join('\n') } };
 }
 
@@ -679,6 +835,9 @@ async function handleRequest(req, res) {
       hasOutputTriggerRules: ctx.hasOutputTriggerRules,
       hasStopRules: ctx.hasStopRules,
       sessions: sessionsObj,
+      sessionContexts: Object.fromEntries(
+        [...sessionContexts.entries()].map(([id, set]) => [id, [...set]])
+      ),
       cache: cacheState,
       deprecatedSetProjectCalls,
     });
@@ -729,6 +888,17 @@ async function handleRequest(req, res) {
       }
     }
     return respond(res, 200, { count: allRules.length, rules: allRules });
+  }
+
+  if (method === 'GET' && (url === '/briefing' || url.startsWith('/briefing?'))) {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const context = params.get('context');
+    if (!context) return respond(res, 400, { error: 'context parameter required' });
+    const bCtx = getRequestContext(null);
+    if (!bCtx.rulesDir) return respond(res, 500, { error: 'No project registered' });
+    const briefing = buildBriefing(bCtx.rulesDir, context);
+    if (!briefing) return respond(res, 404, { error: 'Unknown context: ' + context });
+    return respond(res, 200, { context, briefing });
   }
 
   // Route table for POST handler endpoints
