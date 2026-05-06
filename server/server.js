@@ -91,7 +91,10 @@ class RuleCache {
       return existing.snapshot;
     }
 
-    // Recompile
+    // Recompile — also clear checklist cache for this rulesDir
+    for (const key of checklistCache.keys()) {
+      if (key.startsWith(rulesDir + '|')) checklistCache.delete(key);
+    }
     const mainData = loadRules(mainFile);
     const learnedData = loadRules(learnedFile);
     let rulesData;
