@@ -19,7 +19,8 @@
         "file": {
           "pathPatterns": ["**/*.sql"],
           "pathExclusions": ["**/migrations/**"],
-          "contentPatterns": ["CREATE\\s+PROC"]
+          "contentPatterns": ["CREATE\\s+PROC"],
+          "contentExclusions": ["-- skip-standards"]
         }
       },
       "blockMessage": "SQL standards apply. Read .claude/skills/sql-standards/SKILL.md first.",
