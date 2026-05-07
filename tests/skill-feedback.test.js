@@ -79,6 +79,28 @@ describe('Skill Feedback Module', () => {
       const thresholds = feedbackModule.getThresholds();
       assert.equal(thresholds['test:skill'].corrections, 1);
     });
+
+    it('includes checkpointId when provided', () => {
+      feedbackModule.recordSignal({
+        skillName: 'test:skill',
+        type: 'dismissal',
+        summary: 'User override',
+        checkpointId: 'task-checklist',
+        sessionId: 'sess-1',
+      });
+
+      const logFile = path.join(tmpDir, 'skill-feedback-log.jsonl');
+      const signal = JSON.parse(fs.readFileSync(logFile, 'utf8').trim());
+      assert.equal(signal.checkpointId, 'task-checklist');
+      assert.equal(signal.type, 'dismissal');
+    });
+
+    it('does not increment threshold for dismissal type', () => {
+      feedbackModule.recordSignal({ skillName: 'test:skill', type: 'dismissal', summary: 'skip', checkpointId: 'cp1' });
+
+      const thresholds = feedbackModule.getThresholds();
+      assert.equal(thresholds['test:skill'], undefined);
+    });
   });
 
   describe('getHealth', () => {

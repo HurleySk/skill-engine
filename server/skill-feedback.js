@@ -38,6 +38,7 @@ function recordSignal(signal) {
   if (signal.sessionId) entry.sessionId = signal.sessionId;
   if (signal.project) entry.project = signal.project;
   if (signal.skillSource) entry.skillSource = signal.skillSource;
+  if (signal.checkpointId) entry.checkpointId = signal.checkpointId;
 
   fs.mkdirSync(baseDir, { recursive: true });
   fs.appendFileSync(logPath(), JSON.stringify(entry) + '\n');
