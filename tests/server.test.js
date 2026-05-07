@@ -2343,7 +2343,7 @@ describe('Async Rules Excluded from Sync Enforcement', () => {
 
 describe('Async Dispatch from All Handlers', () => {
   let harness;
-  const PORT = 19780;
+  const PORT = 19781;
 
   before(async () => {
     const analyzersDir = '.claude/skills/analyzers';
