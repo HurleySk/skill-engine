@@ -229,6 +229,44 @@ describe('Skill Feedback Module', () => {
     });
   });
 
+  describe('getAllSignals', () => {
+    it('returns all unresolved signals', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '1', sessionId: 's1' });
+      feedbackModule.recordSignal({ skillName: 'b:skill', type: 'activation', summary: '', sessionId: 's2' });
+
+      const signals = feedbackModule.getAllSignals();
+      assert.equal(signals.length, 2);
+    });
+
+    it('filters by type', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '1' });
+      feedbackModule.recordSignal({ skillName: 'b:skill', type: 'activation', summary: '' });
+      feedbackModule.recordSignal({ skillName: 'c:skill', type: 'dismissal', summary: 'skip', checkpointId: 'cp1' });
+
+      const signals = feedbackModule.getAllSignals({ type: 'dismissal' });
+      assert.equal(signals.length, 1);
+      assert.equal(signals[0].type, 'dismissal');
+    });
+
+    it('excludes resolved signals by default', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '1' });
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '2' });
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '3' });
+      feedbackModule.clearSkill('a:skill');
+
+      const signals = feedbackModule.getAllSignals();
+      assert.equal(signals.length, 0);
+    });
+
+    it('includes resolved when requested', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '1' });
+      feedbackModule.clearSkill('a:skill');
+
+      const signals = feedbackModule.getAllSignals({ includeResolved: true });
+      assert.equal(signals.length, 1);
+    });
+  });
+
   describe('rolling window expiry', () => {
     it('does not count corrections older than 7 days toward threshold', () => {
       const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
