@@ -984,6 +984,26 @@ async function handleRequest(req, res) {
     return respond(res, 200, health);
   }
 
+  if (method === 'GET' && (url === '/skill-feedback/signals' || url.startsWith('/skill-feedback/signals?'))) {
+    const params = new URL(url, 'http://localhost').searchParams;
+    const sessionId = params.get('sessionId');
+    const skillName = params.get('skillName');
+    const type = params.get('type');
+
+    let signals;
+    if (sessionId) {
+      signals = skillFeedback.getSignalsForSession(sessionId, { type: type || undefined });
+      if (skillName) signals = signals.filter(s => s.skillName === skillName);
+    } else if (skillName) {
+      signals = skillFeedback.getSignalsForSkill(skillName);
+      if (type) signals = signals.filter(s => s.type === type);
+    } else {
+      signals = skillFeedback.getAllSignals({ type: type || undefined });
+    }
+
+    return respond(res, 200, signals);
+  }
+
   if (method === 'POST' && url === '/skill-feedback') {
     let body = null;
     try { body = await readBody(req); } catch {}
