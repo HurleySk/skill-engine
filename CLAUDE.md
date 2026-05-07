@@ -10,19 +10,20 @@ No package.json. Tests use the Node.js built-in test runner:
 node --test tests/*.test.js
 ```
 
-Server tests spawn real processes on ports 19751-19781. Ensure those ports are free before running tests.
+Server tests spawn real processes on ports 19751-19784. Ensure those ports are free before running tests.
 
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume` (`/set-project` deprecated)
+- `server/server.js` — HTTP server: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume`, `/skill-feedback`, `/skill-health`, `/skill-feedback/clear` (`/set-project` deprecated)
+- `server/skill-feedback.js` — feedback signal recording, threshold tracking, health reporting for the skill improvement feedback loop
 - `server/pre-write-safety.js` — production safety validation for task files and security model configs
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
 - `hooks/lib/learn.js` — rule/skill classification
 - `hooks/lib/skill-scaffold.js` — creates SKILL.md files
 - `.claude-plugin/plugin.json` — plugin metadata, version, hook definitions
-- `skills/` — SKILL.md files for each slash command
+- `skills/` — SKILL.md files for each slash command (includes `skill-improve`, `debrief`, `using-skill-engine-skills`)
 
 ## Release Procedure
 
