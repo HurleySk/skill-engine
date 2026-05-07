@@ -48,7 +48,7 @@ async function handleJob(msg) {
 
   try {
     const result = await Promise.race([
-      Promise.resolve(analyzeFn(context, config || {})),
+      Promise.resolve(analyzeFn({ ...context, projectRoot }, config || {})),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Analyzer timeout after ' + MAX_JOB_TIMEOUT_MS + 'ms')), MAX_JOB_TIMEOUT_MS)
       )
