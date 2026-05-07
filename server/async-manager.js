@@ -40,7 +40,9 @@ function ensureWorker() {
     }
   });
 
-  worker.on('error', () => {});
+  worker.on('error', (err) => {
+    process.stderr.write('[async-manager] Worker error: ' + (err && err.message || err) + '\n');
+  });
 
   worker.on('exit', (code) => {
     worker = null;
