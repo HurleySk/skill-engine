@@ -61,7 +61,7 @@ async function startTestServer(port, rules, options = {}) {
 
   const serverProcess = spawn(process.execPath, [SERVER_PATH, '--port', String(port)], {
     stdio: 'pipe',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir, ...(options.env || {}) }
+    env: { ...process.env, CLAUDE_PROJECT_DIR: tmpDir, SKILL_FEEDBACK_DIR: tmpDir, ...(options.env || {}) }
   });
 
   await new Promise((resolve, reject) => {
