@@ -2144,3 +2144,211 @@ describe('Full W3 Session Flow', () => {
     assert.ok(res.body.briefing.includes('TabularTranslator'), 'should include guardrail');
   });
 });
+
+describe('Async Rule Compilation', () => {
+  let harness;
+  const PORT = 19777;
+
+  before(async () => {
+    const analyzersDir = '.claude/skills/analyzers';
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'sync-rule': {
+          type: 'guardrail',
+          description: 'Normal sync rule',
+          enforcement: 'block',
+          triggers: { file: { pathPatterns: ['**/*.sql'] } }
+        },
+        'async-rule': {
+          type: 'guardrail',
+          description: 'Async cross-file check',
+          async: { analyzer: 'test-analyzer', config: { maxFiles: 10 } },
+          triggers: { file: { pathPatterns: ['**/*.js'] } }
+        }
+      }
+    }, {
+      extraFiles: {
+        [analyzersDir + '/test-analyzer.js']: `
+          module.exports.analyze = function(context, config) {
+            return [{ severity: 'warning', message: 'async finding for ' + context.filePath, relatedFiles: [] }];
+          };
+        `
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('GET /health reports hasAsyncRules true when async rules exist', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.hasAsyncRules, true);
+  });
+
+  it('GET /health includes asyncWorker status', async () => {
+    const res = await request('GET', '/health', null, PORT);
+    assert.equal(res.status, 200);
+    const aw = res.body.asyncWorker;
+    assert.ok(aw, 'should have asyncWorker field');
+    assert.equal(typeof aw.alive, 'boolean');
+    assert.equal(typeof aw.respawnCount, 'number');
+    assert.equal(typeof aw.jobsProcessed, 'number');
+    assert.equal(aw.degraded, false);
+  });
+
+  it('async rules are excluded from sync enforcement', async () => {
+    const jsFile = path.join(harness.tmpDir, 'test.js');
+    fs.writeFileSync(jsFile, 'console.log("hello")');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: jsFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.ok(!hso || hso.permissionDecision !== 'deny', 'async rule should not produce sync deny');
+  });
+});
+
+describe('Async Job Dispatch via PreTool', () => {
+  let harness;
+  const PORT = 19778;
+
+  before(async () => {
+    const analyzersDir = '.claude/skills/analyzers';
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'async-check': {
+          type: 'guardrail',
+          description: 'Async cross-file check',
+          async: { analyzer: 'cross-check', config: {} },
+          triggers: { file: { pathPatterns: ['**/*.js'] } }
+        }
+      }
+    }, {
+      extraFiles: {
+        [analyzersDir + '/cross-check.js']: `
+          module.exports.analyze = function(context) {
+            return [{ severity: 'warning', message: 'issue in ' + context.filePath, relatedFiles: ['other.js'] }];
+          };
+        `
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('pre-tool with matching async rule does not block (returns empty)', async () => {
+    const jsFile = path.join(harness.tmpDir, 'app.js');
+    fs.writeFileSync(jsFile, 'const x = 1;');
+    const res = await request('POST', '/pre-tool', {
+      tool_name: 'Edit',
+      tool_input: { file_path: jsFile },
+      session_id: 'async-sess-1'
+    }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.ok(!hso || !hso.permissionDecision, 'async rule should not produce a permission decision');
+  });
+
+  it('findings appear in /activate after async job completes', async () => {
+    const jsFile = path.join(harness.tmpDir, 'app.js');
+    fs.writeFileSync(jsFile, 'const x = 1;');
+
+    await request('POST', '/pre-tool', {
+      tool_name: 'Edit',
+      tool_input: { file_path: jsFile },
+      session_id: 'async-sess-2'
+    }, PORT);
+
+    // Wait for worker to process
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const res = await request('POST', '/activate', {
+      prompt: 'what next',
+      session_id: 'async-sess-2'
+    }, PORT);
+    assert.equal(res.status, 200);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx, 'should have additionalContext');
+    assert.ok(ctx.includes('Async Analysis'), 'should contain async analysis header');
+    assert.ok(ctx.includes('issue in'), 'should contain finding message');
+  });
+
+  it('findings are consumed on drain — second activate has no findings', async () => {
+    const res = await request('POST', '/activate', {
+      prompt: 'anything else',
+      session_id: 'async-sess-2'
+    }, PORT);
+    assert.equal(res.status, 200);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(!ctx || !ctx.includes('Async Analysis'), 'should not have async findings on second drain');
+  });
+
+  it('delivers findings even when no sync rules match the prompt', async () => {
+    const jsFile = path.join(harness.tmpDir, 'solo.js');
+    fs.writeFileSync(jsFile, 'const y = 2;');
+
+    await request('POST', '/pre-tool', {
+      tool_name: 'Edit',
+      tool_input: { file_path: jsFile },
+      session_id: 'async-sess-solo'
+    }, PORT);
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const res = await request('POST', '/activate', {
+      prompt: 'completely unrelated prompt',
+      session_id: 'async-sess-solo'
+    }, PORT);
+    assert.equal(res.status, 200);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx, 'should have additionalContext from async findings alone');
+    assert.ok(ctx.includes('Async Analysis'), 'should contain async header');
+  });
+});
+
+describe('Async Rules Excluded from Sync Enforcement', () => {
+  let harness;
+  const PORT = 19779;
+
+  before(async () => {
+    const analyzersDir = '.claude/skills/analyzers';
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'async-tool-rule': {
+          type: 'guardrail',
+          description: 'Async tool-triggered check',
+          enforcement: 'block',
+          async: { analyzer: 'tool-check', config: {} },
+          triggers: {
+            tool: { toolNames: ['Bash'], inputPatterns: ['rm -rf'] }
+          }
+        }
+      }
+    }, {
+      extraFiles: {
+        [analyzersDir + '/tool-check.js']: `
+          module.exports.analyze = function() {
+            return [{ severity: 'warning', message: 'dangerous command', relatedFiles: [] }];
+          };
+        `
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('async rule with tool trigger does not produce sync block', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /tmp/test' },
+      session_id: 'async-excl-1'
+    }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.ok(!hso || hso.permissionDecision !== 'deny', 'async rule should not produce sync deny');
+  });
+});
