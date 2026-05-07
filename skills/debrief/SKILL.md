@@ -49,6 +49,8 @@ For each lesson, evaluate these fix levels and recommend the best one:
 | **New skill** | Reusable multi-step workflow pattern that applies across sessions. |
 | **Skill improvement** | The lesson points to a gap, rigidity, or failure in an existing skill's instructions — not a new skill, but an improvement to one that exists. |
 
+**Project extensions:** If `.claude/skills/debrief-extensions.md` exists in the project, read it. Merge any additional fix levels into the table above and use its routing rules in Step 5.
+
 **You must recommend one with reasoning.** Evaluate:
 - Engineering effort vs. value
 - Fragility and edge cases of a code fix
