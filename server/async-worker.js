@@ -10,6 +10,11 @@ function loadAnalyzer(projectRoot, analyzerName) {
   const key = projectRoot + '|' + analyzerName;
   if (analyzerCache.has(key)) return analyzerCache.get(key);
 
+  if (!analyzerName || /[/\\]|\.\./.test(analyzerName)) {
+    analyzerCache.set(key, null);
+    return null;
+  }
+
   const analyzerPath = path.join(projectRoot, '.claude', 'skills', 'analyzers', analyzerName + '.js');
   try {
     const mod = require(analyzerPath);
@@ -69,6 +74,14 @@ async function handleJob(msg) {
 
 parentPort.on('message', (msg) => {
   handleJob(msg).then((result) => {
-    parentPort.postMessage(result);
-  });
+    try {
+      parentPort.postMessage(result);
+    } catch (err) {
+      parentPort.postMessage({
+        id: result.id, sessionId: result.sessionId, ruleName: result.ruleName,
+        status: 'error', findings: [], durationMs: result.durationMs,
+        error: 'Result not serializable: ' + err.message
+      });
+    }
+  }).catch(() => {});
 });
