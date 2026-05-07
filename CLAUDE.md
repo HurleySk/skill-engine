@@ -10,7 +10,7 @@ No package.json. Tests use the Node.js built-in test runner:
 node --test tests/*.test.js
 ```
 
-Server tests spawn real processes on ports 19751-19784. Ensure those ports are free before running tests.
+Server tests spawn real processes on ports 19751-19784. Ensure those ports are free before running tests. Modules with persistent state (e.g., `skill-feedback.js`) must support a env var override for their storage directory so test servers get isolated state — see `SKILL_FEEDBACK_DIR` pattern in `test-harness.js`.
 
 ## Architecture
 
