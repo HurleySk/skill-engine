@@ -46,21 +46,11 @@ function loadSafetyRules(projectDir) {
   }
 }
 
-function preWriteDeny(reason) {
+function preWriteResponse(decision, reason) {
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: 'SAFETY: ' + reason
-    }
-  };
-}
-
-function preWriteAsk(reason) {
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'ask',
+      permissionDecision: decision,
       permissionDecisionReason: 'SAFETY: ' + reason
     }
   };
@@ -244,14 +234,14 @@ function handlePreWrite(input, projectRoot) {
   if (check === 'task') {
     const result = validateTaskSteps(content, rules, projectDir);
     if (result) {
-      return result.decision === 'deny' ? preWriteDeny(result.reason) : preWriteAsk(result.reason);
+      return preWriteResponse(result.decision, result.reason);
     }
   }
 
   if (check === 'secmodel') {
     const result = validateSecurityModelConfig(content, rules);
     if (result) {
-      return result.decision === 'deny' ? preWriteDeny(result.reason) : preWriteAsk(result.reason);
+      return preWriteResponse(result.decision, result.reason);
     }
   }
 

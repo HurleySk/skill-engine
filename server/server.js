@@ -499,6 +499,22 @@ function recordSessionOnce(session, matches) {
   }
 }
 
+function formatAsyncFindings(findings) {
+  const lines = [];
+  lines.push('───────────────────────────────');
+  lines.push('⚠️ Async Analysis Results (' + findings.length + ' finding' + (findings.length > 1 ? 's' : '') + '):');
+  lines.push('');
+  for (const f of findings) {
+    const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
+    lines.push(prefix + ' ' + f.message);
+    if (f.relatedFiles && f.relatedFiles.length) {
+      lines.push('  Related: ' + f.relatedFiles.join(', '));
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
 function buildEnforcementResponse(matches) {
   if (!matches.length) return {};
   sortBlockFirst(matches);
@@ -519,6 +535,33 @@ function buildEnforcementResponse(matches) {
   return {};
 }
 
+function initializeSessionChecklists(sessionId, matches, rulesDir) {
+  for (const m of matches) {
+    if (!m.rule.sessionContext) continue;
+    let ctxSet = sessionContexts.get(sessionId);
+    if (!ctxSet) {
+      ctxSet = new Set();
+      sessionContexts.set(sessionId, ctxSet);
+    }
+    ctxSet.add(m.rule.sessionContext);
+    if (rulesDir) {
+      const items = loadChecklist(rulesDir, m.rule.sessionContext);
+      if (items) {
+        let state = sessionChecklists.get(sessionId);
+        if (!state) {
+          state = new Map();
+          sessionChecklists.set(sessionId, state);
+        }
+        for (const item of items) {
+          if (!state.has(item.name)) {
+            state.set(item.name, { satisfied: false, item });
+          }
+        }
+      }
+    }
+  }
+}
+
 // --- Activate handler ---
 function handleActivate(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
@@ -535,50 +578,14 @@ function handleActivate(input) {
   if (!matches.length) {
     const asyncFindings = input && input.session_id ? asyncManager.drainFindings(input.session_id) : [];
     if (!asyncFindings.length) return {};
-    const lines = [];
-    lines.push('───────────────────────────────');
-    lines.push('⚠️ Async Analysis Results (' + asyncFindings.length + ' finding' + (asyncFindings.length > 1 ? 's' : '') + '):');
-    lines.push('');
-    for (const f of asyncFindings) {
-      const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
-      lines.push(prefix + ' ' + f.message);
-      if (f.relatedFiles && f.relatedFiles.length) {
-        lines.push('  Related: ' + f.relatedFiles.join(', '));
-      }
-    }
-    lines.push('');
+    const lines = formatAsyncFindings(asyncFindings);
     return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
   }
   sortByPriority(matches);
   recordSessionOnce(session, matches);
 
-  // Set session context and initialize checklists
   if (input.session_id) {
-    for (const m of matches) {
-      if (m.rule.sessionContext) {
-        let ctxSet = sessionContexts.get(input.session_id);
-        if (!ctxSet) {
-          ctxSet = new Set();
-          sessionContexts.set(input.session_id, ctxSet);
-        }
-        ctxSet.add(m.rule.sessionContext);
-        if (ctx.rulesDir) {
-          const items = loadChecklist(ctx.rulesDir, m.rule.sessionContext);
-          if (items) {
-            let state = sessionChecklists.get(input.session_id);
-            if (!state) {
-              state = new Map();
-              sessionChecklists.set(input.session_id, state);
-            }
-            for (const item of items) {
-              if (!state.has(item.name)) {
-                state.set(item.name, { satisfied: false, item });
-              }
-            }
-          }
-        }
-      }
-    }
+    initializeSessionChecklists(input.session_id, matches, ctx.rulesDir);
   }
 
   const count = matches.length;
@@ -606,28 +613,17 @@ function handleActivate(input) {
 
   // Drain async findings for this session
   const asyncFindings = input.session_id ? asyncManager.drainFindings(input.session_id) : [];
-
   if (asyncFindings.length) {
-    lines.push('───────────────────────────────');
-    lines.push('⚠️ Async Analysis Results (' + asyncFindings.length + ' finding' + (asyncFindings.length > 1 ? 's' : '') + '):');
-    lines.push('');
-    for (const f of asyncFindings) {
-      const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
-      lines.push(prefix + ' ' + f.message);
-      if (f.relatedFiles && f.relatedFiles.length) {
-        lines.push('  Related: ' + f.relatedFiles.join(', '));
-      }
-    }
-    lines.push('');
+    lines.push(...formatAsyncFindings(asyncFindings));
   }
 
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
 }
 
 // --- Enforce-tool handler (PreToolUse for any tool) ---
-function handleEnforceTool(input) {
+function handleEnforceTool(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  const ctx = getRequestContext(input);
+  ctx = ctx || getRequestContext(input);
   if (!ctx.hasToolTriggerRules) return {};
   const toolName = input && input.tool_name;
   const toolInput = input && input.tool_input;
@@ -650,9 +646,9 @@ function handleEnforceTool(input) {
 }
 
 // --- Post-tool handler (PostToolUse) ---
-function handlePostTool(input) {
+function handlePostTool(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  const ctx = getRequestContext(input);
+  ctx = ctx || getRequestContext(input);
   const toolName = input && input.tool_name;
   const toolOutput = input && input.tool_output;
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
@@ -720,13 +716,13 @@ function handleStop(input) {
 }
 
 // --- Enforce handler ---
-function handleEnforce(input) {
+function handleEnforce(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const filePath = input && input.tool_input && input.tool_input.file_path;
   if (!filePath) return {};
   const toolName = input && input.tool_name;
   const writeContent = input && input.tool_input && (input.tool_input.content || input.tool_input.new_string || '');
-  const ctx = getRequestContext(input);
+  ctx = ctx || getRequestContext(input);
   const session = getSession(input.session_id, ctx.projectRoot);
 
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
@@ -742,9 +738,9 @@ function handleEnforce(input) {
   return buildEnforcementResponse(matches);
 }
 
-function handlePreWrite(input) {
+function handlePreWrite(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  const ctx = getRequestContext(input);
+  ctx = ctx || getRequestContext(input);
   return preWriteHandler(input, ctx.projectRoot);
 }
 
@@ -755,15 +751,16 @@ let paused = false;
 
 // --- Consolidated PreToolUse handler ---
 function handlePreTool(input) {
+  const ctx = (paused || process.env.SKILL_ENGINE_OFF === '1') ? null : getRequestContext(input);
+
   const results = [
-    handleEnforce(input),
-    handleEnforceTool(input),
-    handlePreWrite(input),
+    handleEnforce(input, ctx),
+    handleEnforceTool(input, ctx),
+    handlePreWrite(input, ctx),
   ];
 
   // Dispatch async jobs for matching async rules
-  if (!paused && process.env.SKILL_ENGINE_OFF !== '1') {
-    const ctx = getRequestContext(input);
+  if (ctx) {
     if (ctx.hasAsyncRules && input && input.tool_input && input.tool_input.file_path) {
       const filePath = input.tool_input.file_path;
       const content = input.tool_input.content || input.tool_input.new_string || '';
