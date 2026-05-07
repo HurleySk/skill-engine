@@ -8,7 +8,7 @@ const THRESHOLD_COUNT = 3;
 const MAX_SIGNALS = 200;
 const ROLLING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-let baseDir = path.join(os.homedir(), '.claude');
+let baseDir = process.env.SKILL_FEEDBACK_DIR || path.join(os.homedir(), '.claude');
 
 function _setBaseDir(dir) { baseDir = dir; }
 
