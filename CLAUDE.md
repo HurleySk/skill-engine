@@ -10,12 +10,12 @@ No package.json. Tests use the Node.js built-in test runner:
 node --test tests/*.test.js
 ```
 
-Server tests spawn real processes on ports 19751-19784. Ensure those ports are free before running tests. Modules with persistent state (e.g., `skill-feedback.js`) must support a env var override for their storage directory so test servers get isolated state — see `SKILL_FEEDBACK_DIR` pattern in `test-harness.js`.
+Server tests spawn real processes on ports 19751-19785. Ensure those ports are free before running tests. Modules with persistent state (e.g., `skill-feedback.js`) must support a env var override for their storage directory so test servers get isolated state — see `SKILL_FEEDBACK_DIR` pattern in `test-harness.js`.
 
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume`, `/skill-feedback`, `/skill-health`, `/skill-feedback/clear` (`/set-project` deprecated)
+- `server/server.js` — HTTP server: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume`, `/skill-feedback`, `/skill-health`, `/skill-feedback/clear`, `/skill-feedback/signals` (`/set-project` deprecated)
 - `server/skill-feedback.js` — feedback signal recording, threshold tracking, health reporting for the skill improvement feedback loop
 - `server/pre-write-safety.js` — production safety validation for task files and security model configs
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
