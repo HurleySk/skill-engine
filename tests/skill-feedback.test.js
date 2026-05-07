@@ -182,6 +182,53 @@ describe('Skill Feedback Module', () => {
     });
   });
 
+  describe('getSignalsForSession', () => {
+    it('returns signals filtered by sessionId', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'activation', summary: '', sessionId: 'sess-1' });
+      feedbackModule.recordSignal({ skillName: 'b:skill', type: 'activation', summary: '', sessionId: 'sess-2' });
+      feedbackModule.recordSignal({ skillName: 'c:skill', type: 'correction', summary: 'x', sessionId: 'sess-1' });
+
+      const signals = feedbackModule.getSignalsForSession('sess-1');
+      assert.equal(signals.length, 2);
+      assert.ok(signals.every(s => s.sessionId === 'sess-1'));
+    });
+
+    it('returns empty array when no signals match sessionId', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'activation', summary: '', sessionId: 'sess-1' });
+
+      const signals = feedbackModule.getSignalsForSession('sess-99');
+      assert.equal(signals.length, 0);
+    });
+
+    it('filters by type when provided', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'activation', summary: '', sessionId: 'sess-1' });
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: 'x', sessionId: 'sess-1' });
+      feedbackModule.recordSignal({ skillName: 'b:skill', type: 'activation', summary: '', sessionId: 'sess-1' });
+
+      const signals = feedbackModule.getSignalsForSession('sess-1', { type: 'activation' });
+      assert.equal(signals.length, 2);
+      assert.ok(signals.every(s => s.type === 'activation'));
+    });
+
+    it('excludes resolved signals by default', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '1', sessionId: 'sess-1' });
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '2', sessionId: 'sess-1' });
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '3', sessionId: 'sess-1' });
+      feedbackModule.clearSkill('a:skill');
+
+      const signals = feedbackModule.getSignalsForSession('sess-1');
+      assert.equal(signals.length, 0);
+    });
+
+    it('includes resolved signals when requested', () => {
+      feedbackModule.recordSignal({ skillName: 'a:skill', type: 'correction', summary: '1', sessionId: 'sess-1' });
+      feedbackModule.clearSkill('a:skill');
+
+      const signals = feedbackModule.getSignalsForSession('sess-1', { includeResolved: true });
+      assert.equal(signals.length, 1);
+    });
+  });
+
   describe('rolling window expiry', () => {
     it('does not count corrections older than 7 days toward threshold', () => {
       const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
