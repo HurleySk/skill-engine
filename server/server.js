@@ -93,10 +93,6 @@ class RuleCache {
       return existing.snapshot;
     }
 
-    // Recompile — also clear checklist cache for this rulesDir
-    for (const key of checklistCache.keys()) {
-      if (key.startsWith(rulesDir + '|')) checklistCache.delete(key);
-    }
     const mainData = loadRules(mainFile);
     const learnedData = loadRules(learnedFile);
     let rulesData;
@@ -156,8 +152,6 @@ const ruleCache = new RuleCache();
 const crypto = require('crypto');
 const sessionRegistry = new Map();
 const sessionContexts = new Map(); // sessionId → Set of context tags
-const sessionChecklists = new Map(); // sessionId → Map<itemName, {satisfied, item}>
-const checklistCache = new Map(); // rulesDir|context → items array
 let lastRegisteredSessionId = null;
 let deprecatedSetProjectCalls = 0;
 
@@ -196,29 +190,6 @@ function registerSession(sessionId, projectDir) {
     rulesLoaded: cached.compiledRules.length,
     errors,
   };
-}
-
-// --- Checklist loader ---
-function loadChecklist(rulesDir, context) {
-  const cacheKey = rulesDir + '|' + context;
-  const cached = checklistCache.get(cacheKey);
-  if (cached) return cached;
-  const checklistPath = path.join(rulesDir, context, 'checklist.json');
-  try {
-    const data = JSON.parse(fs.readFileSync(checklistPath, 'utf8'));
-    if (data.context === context && Array.isArray(data.items)) {
-      const items = data.items.map(item => ({
-        name: item.name,
-        verificationRe: new RegExp(item.verification, 'i'),
-        tools: new Set(item.tools || []),
-        severity: item.severity || 'recommended',
-        message: item.message || item.name,
-      }));
-      checklistCache.set(cacheKey, items);
-      return items;
-    }
-  } catch {}
-  return null;
 }
 
 // --- Briefing builder ---
@@ -393,10 +364,6 @@ function cleanStaleSessions() {
     const reg = sessionRegistry.get(id);
     if (!reg || reg.lastRequest < cutoff) sessionContexts.delete(id);
   }
-  for (const [id] of sessionChecklists) {
-    const reg = sessionRegistry.get(id);
-    if (!reg || reg.lastRequest < cutoff) sessionChecklists.delete(id);
-  }
   asyncManager.clearStaleSessions(sessionRegistry);
 }
 
@@ -542,7 +509,7 @@ function buildEnforcementResponse(matches) {
   return {};
 }
 
-function initializeSessionChecklists(sessionId, matches, rulesDir) {
+function initializeSessionContexts(sessionId, matches) {
   for (const m of matches) {
     if (!m.rule.sessionContext) continue;
     let ctxSet = sessionContexts.get(sessionId);
@@ -551,21 +518,25 @@ function initializeSessionChecklists(sessionId, matches, rulesDir) {
       sessionContexts.set(sessionId, ctxSet);
     }
     ctxSet.add(m.rule.sessionContext);
-    if (rulesDir) {
-      const items = loadChecklist(rulesDir, m.rule.sessionContext);
-      if (items) {
-        let state = sessionChecklists.get(sessionId);
-        if (!state) {
-          state = new Map();
-          sessionChecklists.set(sessionId, state);
-        }
-        for (const item of items) {
-          if (!state.has(item.name)) {
-            state.set(item.name, { satisfied: false, item });
-          }
-        }
-      }
-    }
+  }
+}
+
+// --- Async dispatch helper (fires from any handler) ---
+function dispatchAsyncJobs(ctx, input, matchFn, contextBuilder) {
+  if (!ctx || !ctx.hasAsyncRules) return;
+  const session = getSession(input.session_id, ctx.projectRoot);
+  for (const entry of ctx.compiledRules) {
+    if (!entry.isAsync) continue;
+    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
+    if (checkSkip(entry.name, entry.rule, session)) continue;
+    if (!matchFn(entry)) continue;
+    asyncManager.postJob({
+      sessionId: input.session_id || 'unknown',
+      projectRoot: ctx.projectRoot,
+      analyzer: entry.asyncAnalyzer,
+      config: entry.asyncConfig,
+      context: { ...contextBuilder(entry), ruleName: entry.name },
+    });
   }
 }
 
@@ -592,8 +563,14 @@ function handleActivate(input) {
   recordSessionOnce(session, matches);
 
   if (input.session_id) {
-    initializeSessionChecklists(input.session_id, matches, ctx.rulesDir);
+    initializeSessionContexts(input.session_id, matches);
   }
+
+  // Dispatch async jobs for async rules matching this prompt
+  dispatchAsyncJobs(ctx, input, (entry) => {
+    if (!entry.keywordsLower && !entry.intentRe && !entry.boostRe) return false;
+    return matchPromptWithBoost(prompt, entry);
+  }, () => ({ prompt }));
 
   const count = matches.length;
   const lines = [
@@ -649,6 +626,16 @@ function handleEnforceTool(input, ctx) {
     if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
     return { enforcement };
   });
+
+  // Dispatch async jobs for async rules with tool triggers
+  dispatchAsyncJobs(ctx, input, (entry) => {
+    if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
+    if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) return false;
+    if (entry.toolTriggerNamesSet && !toolName) return false;
+    if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
+    return true;
+  }, () => ({ toolName, toolInput: inputStr }));
+
   return buildEnforcementResponse(matches);
 }
 
@@ -659,28 +646,56 @@ function handlePostTool(input, ctx) {
   const toolName = input && input.tool_name;
   const toolOutput = input && input.tool_output;
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
-
-  // Track checklist satisfaction
   const sid = input && input.session_id;
-  if (sid && sessionChecklists.has(sid)) {
-    const state = sessionChecklists.get(sid);
-    const inputContent = input.tool_input ? JSON.stringify(input.tool_input) : '';
-    const combinedContent = inputContent + ' ' + outputStr;
-    for (const [, entry] of state) {
-      if (entry.satisfied) continue;
-      if (entry.item.tools.size && !entry.item.tools.has(toolName)) continue;
-      if (entry.item.verificationRe.test(combinedContent)) entry.satisfied = true;
-    }
-  }
 
-  if (!ctx.hasOutputTriggerRules) return {};
-  const session = getSession(sid, ctx.projectRoot);
-
-  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+  // Dispatch async jobs for async rules with output triggers
+  dispatchAsyncJobs(ctx, input, (entry) => {
     if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
     if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
     if (entry.outputToolNamesSet && !toolName) return false;
     if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) return false;
+    return true;
+  }, () => ({ toolName, toolInput: input.tool_input, toolOutput: outputStr }));
+
+  const lines = [];
+
+  // Sync output trigger rules
+  if (ctx.hasOutputTriggerRules) {
+    const session = getSession(sid, ctx.projectRoot);
+    const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+      if (entry.isAsync) return false;
+      if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
+      if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
+      if (entry.outputToolNamesSet && !toolName) return false;
+      if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) return false;
+      return {};
+    });
+    if (matches.length) {
+      sortByPriority(matches);
+      recordSessionOnce(session, matches);
+      lines.push(...matches.map(m => m.rule.guidance || m.rule.description));
+    }
+  }
+
+  // Deliver pending async findings mid-turn
+  const asyncFindings = sid ? asyncManager.drainFindings(sid) : [];
+  if (asyncFindings.length) {
+    lines.push(...formatAsyncFindings(asyncFindings));
+  }
+
+  if (!lines.length) return {};
+  return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: lines.join('\n') } };
+}
+
+// --- Stop handler ---
+function handleStop(input) {
+  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
+  const ctx = getRequestContext(input);
+  if (!ctx.hasStopRules) return {};
+  const session = getSession(input && input.session_id, ctx.projectRoot);
+
+  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+    if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) return false;
     return {};
   });
   if (!matches.length) return {};
@@ -688,43 +703,6 @@ function handlePostTool(input, ctx) {
   recordSessionOnce(session, matches);
 
   const lines = matches.map(m => m.rule.guidance || m.rule.description);
-  return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: lines.join('\n') } };
-}
-
-// --- Stop handler ---
-const MAX_CHECKLIST_STOP_FIRES = 3;
-function handleStop(input) {
-  if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  const ctx = getRequestContext(input);
-  const session = getSession(input && input.session_id, ctx.projectRoot);
-  const stopRuleLines = [];
-
-  if (ctx.hasStopRules) {
-    const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
-      if (!entry.hookEventsSet || !entry.hookEventsSet.has('Stop')) return false;
-      return {};
-    });
-    sortByPriority(matches);
-    recordSessionOnce(session, matches);
-    stopRuleLines.push(...matches.map(m => m.rule.guidance || m.rule.description));
-  }
-
-  const checklistLines = [];
-  const sid = input && input.session_id;
-  if (sid && sessionChecklists.has(sid)) {
-    const state = sessionChecklists.get(sid);
-    for (const [, entry] of state) {
-      if (!entry.satisfied && entry.item.severity === 'required') {
-        entry.stopFireCount = (entry.stopFireCount || 0) + 1;
-        if (entry.stopFireCount <= MAX_CHECKLIST_STOP_FIRES) {
-          checklistLines.push('⚠️ Checklist: ' + entry.item.message);
-        }
-      }
-    }
-  }
-
-  const lines = [...stopRuleLines, ...checklistLines];
-  if (!lines.length) return {};
   return { decision: 'block', reason: lines.join('\n') };
 }
 
@@ -772,33 +750,14 @@ function handlePreTool(input) {
     handlePreWrite(input, ctx),
   ];
 
-  // Dispatch async jobs for matching async rules
-  if (ctx) {
-    if (ctx.hasAsyncRules && input && input.tool_input && input.tool_input.file_path) {
-      const filePath = input.tool_input.file_path;
-      const content = input.tool_input.content || input.tool_input.new_string || '';
-      const session = getSession(input.session_id, ctx.projectRoot);
-
-      for (const entry of ctx.compiledRules) {
-        if (!entry.isAsync) continue;
-        if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-        if (checkSkip(entry.name, entry.rule, session)) continue;
-        if (!matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData)) continue;
-
-        asyncManager.postJob({
-          sessionId: input.session_id || 'unknown',
-          projectRoot: ctx.projectRoot,
-          analyzer: entry.asyncAnalyzer,
-          config: entry.asyncConfig,
-          context: {
-            filePath,
-            content,
-            toolName: input.tool_name || '',
-            ruleName: entry.name,
-          }
-        });
-      }
-    }
+  // Dispatch async jobs for matching async rules (file-path triggers)
+  if (ctx && input && input.tool_input && input.tool_input.file_path) {
+    const filePath = input.tool_input.file_path;
+    const content = input.tool_input.content || input.tool_input.new_string || '';
+    dispatchAsyncJobs(ctx, input, (entry) => {
+      if (!entry.pathRe || !entry.pathRe.length) return false;
+      return matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData);
+    }, () => ({ filePath, content, toolName: input.tool_name || '' }));
   }
 
   let deny = null;

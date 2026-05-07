@@ -1946,7 +1946,7 @@ describe('Context Boost', () => {
   });
 });
 
-describe('Checklist Enforcement', () => {
+describe('Session Context Initialization', () => {
   let harness;
   const PORT = 19774;
 
@@ -1964,80 +1964,19 @@ describe('Checklist Enforcement', () => {
           skipConditions: { sessionOnce: true }
         }
       }
-    }, {
-      extraFiles: {
-        '.claude/skills/w3-investigation/checklist.json': JSON.stringify({
-          context: 'w3-investigation',
-          items: [
-            {
-              name: 'Verified pipeline ran',
-              verification: 'adf-query-runs|pipeline.*(Succeeded|Failed)',
-              tools: ['Write'],
-              severity: 'required',
-              message: 'You have not verified pipeline run status yet'
-            },
-            {
-              name: 'Queried source data',
-              verification: 'ferconlineprod|onprem.*prod',
-              tools: ['Write'],
-              severity: 'required',
-              message: 'Query source (ferconlineprod) before diagnosing'
-            }
-          ]
-        })
-      }
     });
   });
 
   after(() => { stopTestServer(harness); });
 
-  it('activating a skill loads checklist and context for the session', async () => {
+  it('activating a skill loads context for the session', async () => {
     await request('POST', '/activate', {
       prompt: 'investigate-check data',
-      session_id: 'check-sess-1'
+      session_id: 'ctx-sess-1'
     }, PORT);
     const health = await request('GET', '/health', null, PORT);
     const contexts = health.body.sessionContexts || {};
-    assert.ok(contexts['check-sess-1']);
-  });
-
-  it('PostToolUse satisfies checklist items when tool and pattern match', async () => {
-    await request('POST', '/activate', {
-      prompt: 'investigate-check data',
-      session_id: 'check-sess-2'
-    }, PORT);
-    await request('POST', '/post-tool', {
-      tool_name: 'Write',
-      tool_input: { file_path: '/tmp/tasks/diag.json', content: '{"steps":[{"type":"adf-query-runs"}]}' },
-      tool_output: 'File written',
-      session_id: 'check-sess-2'
-    }, PORT);
-    const stop = await request('POST', '/stop', { session_id: 'check-sess-2' }, PORT);
-    const reason = stop.body.reason || '';
-    assert.ok(!reason.includes('pipeline run status'), 'satisfied item should not warn');
-    assert.ok(reason.includes('ferconlineprod'), 'unsatisfied required item should warn');
-  });
-
-  it('PostToolUse does not satisfy when tool type does not match', async () => {
-    await request('POST', '/activate', {
-      prompt: 'investigate-check data',
-      session_id: 'check-sess-3'
-    }, PORT);
-    await request('POST', '/post-tool', {
-      tool_name: 'Read',
-      tool_output: 'adf-query-runs pipeline Succeeded',
-      session_id: 'check-sess-3'
-    }, PORT);
-    const stop = await request('POST', '/stop', { session_id: 'check-sess-3' }, PORT);
-    const reason = stop.body.reason || '';
-    assert.ok(reason.includes('pipeline run status'), 'wrong tool type should not satisfy');
-  });
-
-  it('stop with no checklist context returns normal stop output', async () => {
-    const stop = await request('POST', '/stop', { session_id: 'no-checklist-sess' }, PORT);
-    const reason = stop.body.reason || '';
-    assert.ok(!reason.includes('pipeline run status'));
-    assert.ok(!reason.includes('ferconlineprod'));
+    assert.ok(contexts['ctx-sess-1']);
   });
 });
 
@@ -2148,25 +2087,13 @@ describe('Full W3 Session Flow', () => {
       extraFiles: {
         '.claude/skills/w3-investigation/quick-ref.md': '# Quick Ref\n\nFactory table here.',
         '.claude/skills/w3-investigation/known-issues.md': '# Known Issues\n\nNULL owningbusinessunit.',
-        '.claude/skills/w3-investigation/checklist.json': JSON.stringify({
-          context: 'w3-investigation',
-          items: [
-            {
-              name: 'Source queried',
-              verification: 'ferconlineprod',
-              tools: ['Write'],
-              severity: 'required',
-              message: 'Query source (ferconlineprod) first'
-            }
-          ]
-        })
       }
     });
   });
 
   after(() => { stopTestServer(harness); });
 
-  it('complete session: activate → context → enhanced guardrail → checklist warn on stop', async () => {
+  it('complete session: activate → context → enhanced guardrail', async () => {
     const sid = 'flow-sess-1';
     const activate = await request('POST', '/activate', {
       prompt: 'investigate-flow data issue', session_id: sid
@@ -2179,25 +2106,6 @@ describe('Full W3 Session Flow', () => {
     }, PORT);
     assert.ok(guardrail.body.hookSpecificOutput);
     assert.ok(guardrail.body.hookSpecificOutput.additionalContext.includes('ENHANCED'));
-
-    const stop = await request('POST', '/stop', { session_id: sid }, PORT);
-    assert.equal(stop.body.decision, 'block');
-    assert.ok(stop.body.reason.includes('ferconlineprod'));
-  });
-
-  it('complete session: activate → satisfy checklist → clean stop', async () => {
-    const sid = 'flow-sess-2';
-    await request('POST', '/activate', {
-      prompt: 'investigate-flow data issue', session_id: sid
-    }, PORT);
-    await request('POST', '/post-tool', {
-      tool_name: 'Write',
-      tool_input: { file_path: '/tmp/tasks/diag.json', content: '{"steps":[{"type":"sql-query","connection":"ferconlineprod"}]}' },
-      tool_output: 'File written', session_id: sid
-    }, PORT);
-    const stop = await request('POST', '/stop', { session_id: sid }, PORT);
-    const reason = stop.body.reason || '';
-    assert.ok(!reason.includes('ferconlineprod'), 'satisfied checklist item should not warn');
   });
 
   it('briefing endpoint returns compiled context for investigation', async () => {
@@ -2208,21 +2116,6 @@ describe('Full W3 Session Flow', () => {
     assert.ok(res.body.briefing.includes('TabularTranslator'), 'should include guardrail');
   });
 
-  it('checklist items stop blocking after MAX_CHECKLIST_STOP_FIRES', async () => {
-    const sid = 'flow-sess-loop';
-    await request('POST', '/activate', {
-      prompt: 'investigate-flow data issue', session_id: sid
-    }, PORT);
-
-    for (let i = 1; i <= 3; i++) {
-      const stop = await request('POST', '/stop', { session_id: sid }, PORT);
-      assert.equal(stop.body.decision, 'block', `fire ${i} should block`);
-      assert.ok(stop.body.reason.includes('ferconlineprod'), `fire ${i} should include message`);
-    }
-
-    const stop4 = await request('POST', '/stop', { session_id: sid }, PORT);
-    assert.ok(!stop4.body.decision, 'fire 4 should not block (threshold exceeded)');
-  });
 });
 
 describe('Async Rule Compilation', () => {
@@ -2430,5 +2323,108 @@ describe('Async Rules Excluded from Sync Enforcement', () => {
     assert.equal(res.status, 200);
     const hso = res.body.hookSpecificOutput;
     assert.ok(!hso || hso.permissionDecision !== 'deny', 'async rule should not produce sync deny');
+  });
+
+  it('async rule with tool trigger dispatches job and delivers via activate', async () => {
+    await request('POST', '/pre-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /tmp/test' },
+      session_id: 'async-tool-dispatch-1'
+    }, PORT);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const res = await request('POST', '/activate', {
+      prompt: 'what next',
+      session_id: 'async-tool-dispatch-1'
+    }, PORT);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx && ctx.includes('dangerous command'), 'tool-triggered async job should produce findings');
+  });
+});
+
+describe('Async Dispatch from All Handlers', () => {
+  let harness;
+  const PORT = 19780;
+
+  before(async () => {
+    const analyzersDir = '.claude/skills/analyzers';
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'prompt-async': {
+          type: 'domain',
+          description: 'Async prompt-triggered analysis',
+          async: { analyzer: 'prompt-check', config: {} },
+          triggers: { prompt: { keywords: ['analyze-this'] } }
+        },
+        'output-async': {
+          type: 'domain',
+          description: 'Async output-triggered analysis',
+          async: { analyzer: 'output-check', config: {} },
+          triggers: { output: { toolNames: ['Bash'], outputPatterns: ['ERROR_DETECTED'] } }
+        }
+      }
+    }, {
+      extraFiles: {
+        [analyzersDir + '/prompt-check.js']: `
+          module.exports.analyze = function(context) {
+            return [{ severity: 'info', message: 'prompt-finding: ' + (context.prompt || '').slice(0, 20) }];
+          };
+        `,
+        [analyzersDir + '/output-check.js']: `
+          module.exports.analyze = function(context) {
+            return [{ severity: 'warning', message: 'output-finding: error detected in ' + context.toolName }];
+          };
+        `
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('activate dispatches async job for prompt-triggered rule', async () => {
+    await request('POST', '/activate', {
+      prompt: 'analyze-this data set',
+      session_id: 'async-prompt-1'
+    }, PORT);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const res = await request('POST', '/activate', {
+      prompt: 'what next',
+      session_id: 'async-prompt-1'
+    }, PORT);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx && ctx.includes('prompt-finding'), 'prompt-triggered async should produce findings');
+  });
+
+  it('post-tool dispatches async job for output-triggered rule', async () => {
+    await request('POST', '/post-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'check status' },
+      tool_output: 'Process failed ERROR_DETECTED in module',
+      session_id: 'async-output-1'
+    }, PORT);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const res = await request('POST', '/activate', {
+      prompt: 'what next',
+      session_id: 'async-output-1'
+    }, PORT);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx && ctx.includes('output-finding'), 'output-triggered async should produce findings');
+  });
+
+  it('post-tool delivers pending async findings mid-turn', async () => {
+    await request('POST', '/activate', {
+      prompt: 'analyze-this data set',
+      session_id: 'async-midturn-1'
+    }, PORT);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Read',
+      tool_input: { file_path: '/tmp/anything.txt' },
+      tool_output: 'file content here',
+      session_id: 'async-midturn-1'
+    }, PORT);
+    const ctx = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx && ctx.includes('prompt-finding'), 'mid-turn PostToolUse should deliver pending async findings');
   });
 });
