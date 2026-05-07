@@ -57,6 +57,12 @@ describe('Server Health', () => {
     const res = await request('GET', '/nonexistent-endpoint', null, PORT);
     assert.equal(res.status, 404);
   });
+
+  it('POST /stop returns empty when no stop rules exist', async () => {
+    const res = await request('POST', '/stop', { session_id: 'no-stop-rules' }, PORT);
+    assert.equal(res.status, 200);
+    assert.deepStrictEqual(res.body, {});
+  });
 });
 
 describe('Activate Endpoint', () => {
@@ -239,7 +245,7 @@ describe('Content Exclusions', () => {
   let harness;
   let testSqlFile;
   let testSqlExcluded;
-  const PORT = 19772;
+  const PORT = 19780;
 
   before(async () => {
     harness = await startTestServer(PORT, {

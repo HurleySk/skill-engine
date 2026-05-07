@@ -454,6 +454,7 @@ function matchFileCompiled(filePath, entry, projectRoot, rulesData) {
   if (!entry.pathRe.some(re => re.test(normalized))) return false;
   const hasContentRe = entry.contentRe && entry.contentRe.length;
   const hasContentExcl = entry.contentExclRe && entry.contentExclRe.length;
+  // exclusions without contentPatterns = fire on all non-excluded content (mirrors pathExclusions)
   if (hasContentRe || hasContentExcl) {
     let content;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch { return false; }
