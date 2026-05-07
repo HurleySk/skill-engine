@@ -2428,3 +2428,146 @@ describe('Async Dispatch from All Handlers', () => {
     assert.ok(ctx && ctx.includes('prompt-finding'), 'mid-turn PostToolUse should deliver pending async findings');
   });
 });
+
+describe('Skill Feedback Endpoint', () => {
+  let harness;
+  const PORT = 19782;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {}
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('POST /skill-feedback records a signal', async () => {
+    const res = await request('POST', '/skill-feedback', {
+      skillName: 'test:skill',
+      type: 'correction',
+      summary: 'test signal'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.recorded, true);
+    assert.ok(Array.isArray(res.body.needsReview));
+  });
+
+  it('POST /skill-feedback returns 400 without skillName', async () => {
+    const res = await request('POST', '/skill-feedback', {
+      type: 'correction',
+      summary: 'no skill name'
+    }, PORT);
+    assert.equal(res.status, 400);
+  });
+
+  it('GET /skill-health returns health data', async () => {
+    const res = await request('GET', '/skill-health', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body.flagged));
+    assert.equal(typeof res.body.totalSignals, 'number');
+  });
+
+  it('POST /skill-feedback/clear resets a skill', async () => {
+    for (let i = 0; i < 3; i++) {
+      await request('POST', '/skill-feedback', {
+        skillName: 'clear:test', type: 'correction', summary: 'c' + i
+      }, PORT);
+    }
+    let health = await request('GET', '/skill-health', null, PORT);
+    assert.ok(health.body.flagged.some(f => f.skillName === 'clear:test'));
+
+    const res = await request('POST', '/skill-feedback/clear', { skillName: 'clear:test' }, PORT);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.cleared, true);
+
+    health = await request('GET', '/skill-health', null, PORT);
+    assert.ok(!health.body.flagged.some(f => f.skillName === 'clear:test'));
+  });
+
+  it('POST /skill-feedback/clear returns 400 without skillName', async () => {
+    const res = await request('POST', '/skill-feedback/clear', {}, PORT);
+    assert.equal(res.status, 400);
+  });
+});
+
+describe('Activation Logging', () => {
+  let harness;
+  const PORT = 19783;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'log-test-rule': {
+          type: 'domain',
+          description: 'Test rule for activation logging',
+          triggers: { prompt: { keywords: ['activation-log-test'] } }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('logs activation signals when skills match', async () => {
+    await request('POST', '/activate', { prompt: 'activation-log-test' }, PORT);
+
+    const health = await request('GET', '/skill-health', null, PORT);
+    assert.ok(health.body.totalSignals >= 1);
+  });
+});
+
+describe('Skill Health Nudge', () => {
+  let harness;
+  const PORT = 19784;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'filler-rule': {
+          type: 'domain',
+          description: 'Filler',
+          triggers: { prompt: { keywords: ['nudge-test'] } }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('appends nudge when skills are flagged', async () => {
+    for (let i = 0; i < 3; i++) {
+      await request('POST', '/skill-feedback', {
+        skillName: 'nudge:target', type: 'correction', summary: 'c' + i
+      }, PORT);
+    }
+
+    const res = await request('POST', '/activate', { prompt: 'nudge-test' }, PORT);
+    const context = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(context, 'Should have additional context');
+    assert.ok(context.includes('Skill health'), 'Should include skill health nudge');
+    assert.ok(context.includes('nudge:target'), 'Should mention the flagged skill');
+  });
+
+  it('nudge appears even when no rules match', async () => {
+    const res = await request('POST', '/activate', { prompt: 'no-rules-match-here' }, PORT);
+    const context = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    assert.ok(context, 'Should have context even with no rule matches');
+    assert.ok(context.includes('Skill health'), 'Should include nudge');
+  });
+
+  it('no nudge when nothing is flagged', async () => {
+    await request('POST', '/skill-feedback/clear', { skillName: 'nudge:target' }, PORT);
+
+    const res = await request('POST', '/activate', { prompt: 'no-rules-match-either', session_id: 'fresh' }, PORT);
+    const context = res.body.hookSpecificOutput && res.body.hookSpecificOutput.additionalContext;
+    if (context) {
+      assert.ok(!context.includes('Skill health'), 'Should not include nudge when cleared');
+    }
+  });
+});

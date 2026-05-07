@@ -10,6 +10,7 @@ const { normalizePath, globToRegex } = require(path.join(libDir, 'glob-match'));
 const { loadRules } = require(path.join(libDir, 'rules-io'));
 const { handlePreWrite: preWriteHandler } = require('./pre-write-safety');
 const asyncManager = require('./async-manager');
+const skillFeedback = require('./skill-feedback');
 
 // --- CLI args (keep --port for tests) ---
 const PORT = (() => {
@@ -555,12 +556,30 @@ function handleActivate(input) {
   });
   if (!matches.length) {
     const asyncFindings = input && input.session_id ? asyncManager.drainFindings(input.session_id) : [];
-    if (!asyncFindings.length) return {};
-    const lines = formatAsyncFindings(asyncFindings);
-    return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
+    const health = skillFeedback.getHealth();
+    if (!asyncFindings.length && !health.flagged.length) return {};
+    const outLines = [];
+    if (asyncFindings.length) outLines.push(...formatAsyncFindings(asyncFindings));
+    if (health.flagged.length) {
+      const skillList = health.flagged.map(f => f.skillName).join(', ');
+      if (outLines.length) outLines.push('');
+      outLines.push('\u{1F4CB} **Skill health:** ' + health.flagged.length + ' skill' +
+        (health.flagged.length > 1 ? 's have' : ' has') +
+        ' accumulated feedback (' + skillList + ') — run `/skill-engine:skill-improve` to review.');
+    }
+    return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: outLines.join('\n') } };
   }
   sortByPriority(matches);
   recordSessionOnce(session, matches);
+
+  for (const m of matches) {
+    skillFeedback.recordSignal({
+      skillName: m.name,
+      type: 'activation',
+      summary: '',
+      sessionId: input.session_id || '',
+    });
+  }
 
   if (input.session_id) {
     initializeSessionContexts(input.session_id, matches);
@@ -599,6 +618,16 @@ function handleActivate(input) {
   const asyncFindings = input.session_id ? asyncManager.drainFindings(input.session_id) : [];
   if (asyncFindings.length) {
     lines.push(...formatAsyncFindings(asyncFindings));
+  }
+
+  // Append skill-health nudge if skills are flagged
+  const health = skillFeedback.getHealth();
+  if (health.flagged.length > 0) {
+    const skillList = health.flagged.map(f => f.skillName).join(', ');
+    lines.push('');
+    lines.push('\u{1F4CB} **Skill health:** ' + health.flagged.length + ' skill' +
+      (health.flagged.length > 1 ? 's have' : ' has') +
+      ' accumulated feedback (' + skillList + ') — run `/skill-engine:skill-improve` to review.');
   }
 
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
@@ -947,6 +976,32 @@ async function handleRequest(req, res) {
     const briefing = buildBriefing(bCtx.rulesDir, context);
     if (!briefing) return respond(res, 404, { error: 'Unknown context: ' + context });
     return respond(res, 200, { context, briefing });
+  }
+
+  // --- Skill feedback endpoints ---
+  if (method === 'GET' && url === '/skill-health') {
+    const health = skillFeedback.getHealth();
+    return respond(res, 200, health);
+  }
+
+  if (method === 'POST' && url === '/skill-feedback') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (!body || !body.skillName) {
+      return respond(res, 400, { error: 'skillName required' });
+    }
+    const result = skillFeedback.recordSignal(body);
+    return respond(res, 200, result);
+  }
+
+  if (method === 'POST' && url === '/skill-feedback/clear') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (!body || !body.skillName) {
+      return respond(res, 400, { error: 'skillName required' });
+    }
+    skillFeedback.clearSkill(body.skillName);
+    return respond(res, 200, { cleared: true });
   }
 
   // Route table for POST handler endpoints
