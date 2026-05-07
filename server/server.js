@@ -692,11 +692,12 @@ function handlePostTool(input, ctx) {
 }
 
 // --- Stop handler ---
+const MAX_CHECKLIST_STOP_FIRES = 3;
 function handleStop(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const ctx = getRequestContext(input);
   const session = getSession(input && input.session_id, ctx.projectRoot);
-  const lines = [];
+  const stopRuleLines = [];
 
   if (ctx.hasStopRules) {
     const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
@@ -705,19 +706,24 @@ function handleStop(input) {
     });
     sortByPriority(matches);
     recordSessionOnce(session, matches);
-    lines.push(...matches.map(m => m.rule.guidance || m.rule.description));
+    stopRuleLines.push(...matches.map(m => m.rule.guidance || m.rule.description));
   }
 
+  const checklistLines = [];
   const sid = input && input.session_id;
   if (sid && sessionChecklists.has(sid)) {
     const state = sessionChecklists.get(sid);
     for (const [, entry] of state) {
       if (!entry.satisfied && entry.item.severity === 'required') {
-        lines.push('⚠️ Checklist: ' + entry.item.message);
+        entry.stopFireCount = (entry.stopFireCount || 0) + 1;
+        if (entry.stopFireCount <= MAX_CHECKLIST_STOP_FIRES) {
+          checklistLines.push('⚠️ Checklist: ' + entry.item.message);
+        }
       }
     }
   }
 
+  const lines = [...stopRuleLines, ...checklistLines];
   if (!lines.length) return {};
   return { decision: 'block', reason: lines.join('\n') };
 }

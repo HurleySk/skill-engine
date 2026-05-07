@@ -2207,6 +2207,22 @@ describe('Full W3 Session Flow', () => {
     assert.ok(res.body.briefing.includes('Known Issues'));
     assert.ok(res.body.briefing.includes('TabularTranslator'), 'should include guardrail');
   });
+
+  it('checklist items stop blocking after MAX_CHECKLIST_STOP_FIRES', async () => {
+    const sid = 'flow-sess-loop';
+    await request('POST', '/activate', {
+      prompt: 'investigate-flow data issue', session_id: sid
+    }, PORT);
+
+    for (let i = 1; i <= 3; i++) {
+      const stop = await request('POST', '/stop', { session_id: sid }, PORT);
+      assert.equal(stop.body.decision, 'block', `fire ${i} should block`);
+      assert.ok(stop.body.reason.includes('ferconlineprod'), `fire ${i} should include message`);
+    }
+
+    const stop4 = await request('POST', '/stop', { session_id: sid }, PORT);
+    assert.ok(!stop4.body.decision, 'fire 4 should not block (threshold exceeded)');
+  });
 });
 
 describe('Async Rule Compilation', () => {
