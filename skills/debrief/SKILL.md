@@ -17,6 +17,80 @@ PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/hurleysk-marketplace/skill-engine/*/ 
 
 ## Process
 
+### Step 0.5: Automated Deviation Check
+
+Before the freeform session scan, run structured checkpoint evaluation against skills that were activated this session.
+
+**1. Query activated skills:**
+
+```bash
+curl -s "http://localhost:${SKILL_ENGINE_PORT:-19750}/skill-feedback/signals?sessionId=${CLAUDE_SESSION_ID}&type=activation"
+```
+
+This returns an array of activation signals. Extract the unique `skillName` values — these are the skills to check.
+
+**Early exit:** If no skills were activated this session, skip to Step 1.
+
+**2. For each activated skill, read its checkpoints:**
+
+Find the SKILL.md file (check both plugin cache and project-local `.claude/skills/`):
+
+```bash
+PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/*/superpowers/*/ 2>/dev/null | sort -V | tail -1)
+# Check: $PLUGIN_DIR/skills/<skill-name>/SKILL.md
+# Also check: .claude/skills/<skill-name>/SKILL.md
+```
+
+Parse the YAML frontmatter for a `checkpoints` key. If no checkpoints defined, skip this skill.
+
+**3. Evaluate each checkpoint against conversation history:**
+
+| Check type | How to evaluate |
+|---|---|
+| `tool_used` | Scan your conversation for tool calls matching the `value` (e.g., `TaskCreate`, `Bash`) |
+| `file_pattern` | Scan Write/Edit tool calls for file paths matching the glob pattern in `value`. Pipe-delimited patterns mean match ANY. |
+| `keyword` | Scan user messages for text matching the regex pattern in `value`. Pipe-delimited alternatives. |
+
+Mark each checkpoint as **met** or **unmet**.
+
+**4. Filter auto-suppressed checkpoints:**
+
+For each unmet checkpoint, query for prior dismissals:
+
+```bash
+curl -s "http://localhost:${SKILL_ENGINE_PORT:-19750}/skill-feedback/signals?skillName=<skill-name>"
+```
+
+Count signals where `type` is `"dismissal"` and `checkpointId` matches this checkpoint's `id`. If 3 or more dismissals, auto-suppress:
+
+> *Auto-suppressed: "\<label\>" has been dismissed N times previously.*
+
+**5. Present unmet checkpoints as questions:**
+
+For each unmet, non-suppressed checkpoint, ask:
+
+> **[skill-name]** was activated but: *\<label\>* — was this intentional?
+> - **Yes, intentional** (user override / not applicable) → record dismissal
+> - **No, that was a deviation** → record correction
+
+**6. Post signals for each response:**
+
+Confirmed deviation:
+```bash
+curl -s -X POST http://localhost:${SKILL_ENGINE_PORT:-19750}/skill-feedback \
+  -H 'Content-Type: application/json' \
+  -d '{"skillName":"<skill-name>","type":"correction","summary":"<label>","checkpointId":"<id>","sessionId":"<session-id>"}'
+```
+
+Dismissed:
+```bash
+curl -s -X POST http://localhost:${SKILL_ENGINE_PORT:-19750}/skill-feedback \
+  -H 'Content-Type: application/json' \
+  -d '{"skillName":"<skill-name>","type":"dismissal","summary":"User override — <label>","checkpointId":"<id>","sessionId":"<session-id>"}'
+```
+
+**7. Continue to Step 1.** The automated check surfaces mechanical deviations; the freeform session scan in Step 1 catches judgment-based issues.
+
 ### Step 1: Session Scan
 
 Review the conversation for notable events:
