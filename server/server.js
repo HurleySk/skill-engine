@@ -634,7 +634,7 @@ function handleEnforceTool(input, ctx) {
     if (entry.toolTriggerNamesSet && !toolName) return false;
     if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
     return true;
-  }, () => ({ toolName, toolInput: inputStr }));
+  }, () => ({ toolName, toolInput: input.tool_input }));
 
   return buildEnforcementResponse(matches);
 }
@@ -649,13 +649,15 @@ function handlePostTool(input, ctx) {
   const sid = input && input.session_id;
 
   // Dispatch async jobs for async rules with output triggers
-  dispatchAsyncJobs(ctx, input, (entry) => {
-    if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
-    if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
-    if (entry.outputToolNamesSet && !toolName) return false;
-    if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) return false;
-    return true;
-  }, () => ({ toolName, toolInput: input.tool_input, toolOutput: outputStr }));
+  if (ctx.hasAsyncRules) {
+    dispatchAsyncJobs(ctx, input, (entry) => {
+      if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
+      if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
+      if (entry.outputToolNamesSet && !toolName) return false;
+      if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) return false;
+      return true;
+    }, () => ({ toolName, toolInput: input.tool_input, toolOutput: outputStr }));
+  }
 
   const lines = [];
 
