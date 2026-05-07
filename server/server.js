@@ -9,6 +9,7 @@ const libDir = path.resolve(__dirname, '..', 'hooks', 'lib');
 const { normalizePath, globToRegex } = require(path.join(libDir, 'glob-match'));
 const { loadRules } = require(path.join(libDir, 'rules-io'));
 const { handlePreWrite: preWriteHandler } = require('./pre-write-safety');
+const asyncManager = require('./async-manager');
 
 // --- CLI args (keep --port for tests) ---
 const PORT = (() => {
@@ -78,6 +79,7 @@ class RuleCache {
         hasToolTriggerRules: false,
         hasOutputTriggerRules: false,
         hasStopRules: false,
+        hasAsyncRules: false,
       };
     }
     const mainFile = path.join(rulesDir, 'skill-rules.json');
@@ -113,6 +115,7 @@ class RuleCache {
     const hasToolTriggerRules = compiled.some(e => e.toolTriggerNamesSet || (e.inputRe && e.inputRe.length));
     const hasOutputTriggerRules = compiled.some(e => e.outputToolNamesSet || (e.outputRe && e.outputRe.length));
     const hasStopRules = compiled.some(e => e.hookEventsSet && e.hookEventsSet.has('Stop'));
+    const hasAsyncRules = compiled.some(e => e.isAsync);
 
     const snapshot = Object.freeze({
       compiledRules: compiled,
@@ -120,6 +123,7 @@ class RuleCache {
       hasToolTriggerRules,
       hasOutputTriggerRules,
       hasStopRules,
+      hasAsyncRules,
     });
 
     // LRU eviction
@@ -272,6 +276,7 @@ function getRequestContext(input) {
       hasToolTriggerRules: false,
       hasOutputTriggerRules: false,
       hasStopRules: false,
+      hasAsyncRules: false,
     };
   }
 
@@ -342,6 +347,11 @@ function compileRules(data) {
         return acc;
       }, []);
     }
+    if (rule.async && rule.async.analyzer) {
+      entry.isAsync = true;
+      entry.asyncAnalyzer = rule.async.analyzer;
+      entry.asyncConfig = rule.async.config || {};
+    }
     compiled.push(entry);
   }
 
@@ -383,6 +393,7 @@ function cleanStaleSessions() {
     const reg = sessionRegistry.get(id);
     if (!reg || reg.lastRequest < cutoff) sessionChecklists.delete(id);
   }
+  asyncManager.clearStaleSessions(sessionRegistry);
 }
 
 const cleanupInterval = setInterval(cleanStaleSessions, 5 * 60 * 1000);
@@ -521,7 +532,23 @@ function handleActivate(input) {
     if (!matchPromptWithBoost(prompt, entry)) return false;
     return {};
   });
-  if (!matches.length) return {};
+  if (!matches.length) {
+    const asyncFindings = input && input.session_id ? asyncManager.drainFindings(input.session_id) : [];
+    if (!asyncFindings.length) return {};
+    const lines = [];
+    lines.push('───────────────────────────────');
+    lines.push('⚠️ Async Analysis Results (' + asyncFindings.length + ' finding' + (asyncFindings.length > 1 ? 's' : '') + '):');
+    lines.push('');
+    for (const f of asyncFindings) {
+      const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
+      lines.push(prefix + ' ' + f.message);
+      if (f.relatedFiles && f.relatedFiles.length) {
+        lines.push('  Related: ' + f.relatedFiles.join(', '));
+      }
+    }
+    lines.push('');
+    return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
+  }
   sortByPriority(matches);
   recordSessionOnce(session, matches);
 
@@ -576,6 +603,24 @@ function handleActivate(input) {
     if (m.rule.skillPath) lines.push('  → Read: ' + m.rule.skillPath);
     lines.push('');
   }
+
+  // Drain async findings for this session
+  const asyncFindings = input.session_id ? asyncManager.drainFindings(input.session_id) : [];
+
+  if (asyncFindings.length) {
+    lines.push('───────────────────────────────');
+    lines.push('⚠️ Async Analysis Results (' + asyncFindings.length + ' finding' + (asyncFindings.length > 1 ? 's' : '') + '):');
+    lines.push('');
+    for (const f of asyncFindings) {
+      const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
+      lines.push(prefix + ' ' + f.message);
+      if (f.relatedFiles && f.relatedFiles.length) {
+        lines.push('  Related: ' + f.relatedFiles.join(', '));
+      }
+    }
+    lines.push('');
+  }
+
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: lines.join('\n') } };
 }
 
@@ -593,6 +638,7 @@ function handleEnforceTool(input) {
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
     if (entry.rule.type !== 'guardrail') return false;
+    if (entry.isAsync) return false;
     const enforcement = getEnforcement(entry.rule, rd.defaults);
     if (enforcement !== 'block' && enforcement !== 'ask' && enforcement !== 'warn') return false;
     if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) return false;
@@ -685,6 +731,7 @@ function handleEnforce(input) {
 
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
     if (entry.rule.type !== 'guardrail') return false;
+    if (entry.isAsync) return false;
     const enforcement = getEnforcement(entry.rule, rd.defaults);
     if (enforcement !== 'block' && enforcement !== 'ask' && enforcement !== 'warn') return false;
     if (!entry.pathRe || !entry.pathRe.length) return false;
@@ -708,13 +755,41 @@ let paused = false;
 
 // --- Consolidated PreToolUse handler ---
 function handlePreTool(input) {
-  // Run all three pre-tool checks and return the most restrictive result.
-  // Priority: deny > ask > context-only > allow (empty).
   const results = [
     handleEnforce(input),
     handleEnforceTool(input),
     handlePreWrite(input),
   ];
+
+  // Dispatch async jobs for matching async rules
+  if (!paused && process.env.SKILL_ENGINE_OFF !== '1') {
+    const ctx = getRequestContext(input);
+    if (ctx.hasAsyncRules && input && input.tool_input && input.tool_input.file_path) {
+      const filePath = input.tool_input.file_path;
+      const content = input.tool_input.content || input.tool_input.new_string || '';
+      const session = getSession(input.session_id, ctx.projectRoot);
+
+      for (const entry of ctx.compiledRules) {
+        if (!entry.isAsync) continue;
+        if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
+        if (checkSkip(entry.name, entry.rule, session)) continue;
+        if (!matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData)) continue;
+
+        asyncManager.postJob({
+          sessionId: input.session_id || 'unknown',
+          projectRoot: ctx.projectRoot,
+          analyzer: entry.asyncAnalyzer,
+          config: entry.asyncConfig,
+          context: {
+            filePath,
+            content,
+            toolName: input.tool_name || '',
+            ruleName: entry.name,
+          }
+        });
+      }
+    }
+  }
 
   let deny = null;
   let ask = null;
@@ -734,21 +809,18 @@ function handlePreTool(input) {
     }
   }
 
-  // Deny beats everything
   if (deny) {
     const out = { ...deny.hookSpecificOutput };
     if (contexts.length) out.additionalContext = contexts.join('\n');
     return { hookSpecificOutput: out };
   }
 
-  // Ask beats allow/context-only
   if (ask) {
     const out = { ...ask.hookSpecificOutput };
     if (contexts.length) out.additionalContext = contexts.join('\n');
     return { hookSpecificOutput: out };
   }
 
-  // Context-only (no decision override)
   if (contexts.length) {
     return {
       hookSpecificOutput: {
@@ -837,6 +909,8 @@ async function handleRequest(req, res) {
       hasToolTriggerRules: ctx.hasToolTriggerRules,
       hasOutputTriggerRules: ctx.hasOutputTriggerRules,
       hasStopRules: ctx.hasStopRules,
+      hasAsyncRules: ctx.hasAsyncRules,
+      asyncWorker: asyncManager.getStatus(),
       sessions: sessionsObj,
       sessionContexts: Object.fromEntries(
         [...sessionContexts.entries()].map(([id, set]) => [id, [...set]])
@@ -974,6 +1048,7 @@ server.listen(PORT, '127.0.0.1', () => {
 // Graceful shutdown
 function shutdown() {
   clearInterval(cleanupInterval);
+  asyncManager.shutdown();
   server.close();
 }
 process.on('SIGTERM', shutdown);
