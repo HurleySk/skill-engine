@@ -235,6 +235,64 @@ describe('Enforce Endpoint', () => {
   });
 });
 
+describe('Content Exclusions', () => {
+  let harness;
+  let testSqlFile;
+  let testSqlExcluded;
+  const PORT = 19772;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'block-sql-excl': {
+          type: 'guardrail',
+          description: 'Block SQL with exclusion',
+          enforcement: 'block',
+          blockMessage: 'SQL blocked',
+          triggers: {
+            file: {
+              pathPatterns: ['**/*.sql'],
+              contentPatterns: ['CREATE\\s+PROC'],
+              contentExclusions: ['-- skip-standards']
+            }
+          }
+        }
+      }
+    });
+
+    testSqlFile = path.join(harness.tmpDir, 'normal.sql');
+    fs.writeFileSync(testSqlFile, 'CREATE PROCEDURE [dbo].[Test]\nAS\nBEGIN\n  SELECT 1\nEND');
+
+    testSqlExcluded = path.join(harness.tmpDir, 'excluded.sql');
+    fs.writeFileSync(testSqlExcluded, '-- skip-standards\nCREATE PROCEDURE [dbo].[Safe]\nAS\nBEGIN\n  SELECT 1\nEND');
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('blocks when content matches pattern but not exclusion', async () => {
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlFile } }, PORT);
+    assert.equal(res.status, 200);
+    const hso = res.body.hookSpecificOutput;
+    assert.equal(hso.permissionDecision, 'deny');
+  });
+
+  it('allows when content matches both pattern and exclusion (exclusion wins)', async () => {
+    const res = await request('POST', '/enforce', { tool_input: { file_path: testSqlExcluded } }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'exclusion should suppress the match');
+  });
+
+  it('allows when content does not match pattern at all', async () => {
+    const safeSql = path.join(harness.tmpDir, 'safe.sql');
+    fs.writeFileSync(safeSql, 'SELECT 1');
+    const res = await request('POST', '/enforce', { tool_input: { file_path: safeSql } }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'no pattern match means no enforcement');
+  });
+});
+
 describe('Cross-Project Env Switching', () => {
   let harness;
   let tmpDirB;
@@ -764,29 +822,29 @@ describe('Stop Endpoint', () => {
 
   after(() => { stopTestServer(harness); });
 
-  it('fires Stop rules and injects guidance', async () => {
+  it('fires Stop rules and blocks with reason', async () => {
     const res = await request('POST', '/stop', { session_id: 'stop-test-1' }, PORT);
     assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.hookEventName, 'Stop');
-    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('committing'));
-    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('test suite'));
+    assert.equal(res.body.decision, 'block');
+    assert.ok(res.body.reason.includes('committing'));
+    assert.ok(res.body.reason.includes('test suite'));
   });
 
   it('respects sessionOnce — second call skips once-only rule', async () => {
     const body = { session_id: 'stop-once' };
     const first = await request('POST', '/stop', body, PORT);
-    assert.ok(first.body.hookSpecificOutput.additionalContext.includes('committing'));
+    assert.ok(first.body.reason.includes('committing'));
     const second = await request('POST', '/stop', body, PORT);
-    const ctx = second.body.hookSpecificOutput.additionalContext;
-    assert.ok(!ctx.includes('committing'), 'sessionOnce commit rule should not fire again');
-    assert.ok(ctx.includes('test suite'), 'non-sessionOnce rule should still fire');
+    const reason = second.body.reason;
+    assert.ok(!reason.includes('committing'), 'sessionOnce commit rule should not fire again');
+    assert.ok(reason.includes('test suite'), 'non-sessionOnce rule should still fire');
   });
 
   it('sorts by priority — high before low', async () => {
     const res = await request('POST', '/stop', { session_id: 'stop-prio' }, PORT);
-    const ctx = res.body.hookSpecificOutput.additionalContext;
-    const highIdx = ctx.indexOf('test suite');
-    const lowIdx = ctx.indexOf('committing');
+    const reason = res.body.reason;
+    const highIdx = reason.indexOf('test suite');
+    const lowIdx = reason.indexOf('committing');
     assert.ok(highIdx < lowIdx, 'HIGH should appear before LOW');
   });
 
@@ -1949,9 +2007,9 @@ describe('Checklist Enforcement', () => {
       session_id: 'check-sess-2'
     }, PORT);
     const stop = await request('POST', '/stop', { session_id: 'check-sess-2' }, PORT);
-    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
-    assert.ok(!ctx.includes('pipeline run status'), 'satisfied item should not warn');
-    assert.ok(ctx.includes('ferconlineprod'), 'unsatisfied required item should warn');
+    const reason = stop.body.reason || '';
+    assert.ok(!reason.includes('pipeline run status'), 'satisfied item should not warn');
+    assert.ok(reason.includes('ferconlineprod'), 'unsatisfied required item should warn');
   });
 
   it('PostToolUse does not satisfy when tool type does not match', async () => {
@@ -1965,15 +2023,15 @@ describe('Checklist Enforcement', () => {
       session_id: 'check-sess-3'
     }, PORT);
     const stop = await request('POST', '/stop', { session_id: 'check-sess-3' }, PORT);
-    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
-    assert.ok(ctx.includes('pipeline run status'), 'wrong tool type should not satisfy');
+    const reason = stop.body.reason || '';
+    assert.ok(reason.includes('pipeline run status'), 'wrong tool type should not satisfy');
   });
 
   it('stop with no checklist context returns normal stop output', async () => {
     const stop = await request('POST', '/stop', { session_id: 'no-checklist-sess' }, PORT);
-    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
-    assert.ok(!ctx.includes('pipeline run status'));
-    assert.ok(!ctx.includes('ferconlineprod'));
+    const reason = stop.body.reason || '';
+    assert.ok(!reason.includes('pipeline run status'));
+    assert.ok(!reason.includes('ferconlineprod'));
   });
 });
 
@@ -2117,8 +2175,8 @@ describe('Full W3 Session Flow', () => {
     assert.ok(guardrail.body.hookSpecificOutput.additionalContext.includes('ENHANCED'));
 
     const stop = await request('POST', '/stop', { session_id: sid }, PORT);
-    assert.ok(stop.body.hookSpecificOutput);
-    assert.ok(stop.body.hookSpecificOutput.additionalContext.includes('ferconlineprod'));
+    assert.equal(stop.body.decision, 'block');
+    assert.ok(stop.body.reason.includes('ferconlineprod'));
   });
 
   it('complete session: activate → satisfy checklist → clean stop', async () => {
@@ -2132,8 +2190,8 @@ describe('Full W3 Session Flow', () => {
       tool_output: 'File written', session_id: sid
     }, PORT);
     const stop = await request('POST', '/stop', { session_id: sid }, PORT);
-    const ctx = stop.body.hookSpecificOutput ? stop.body.hookSpecificOutput.additionalContext : '';
-    assert.ok(!ctx.includes('ferconlineprod'), 'satisfied checklist item should not warn');
+    const reason = stop.body.reason || '';
+    assert.ok(!reason.includes('ferconlineprod'), 'satisfied checklist item should not warn');
   });
 
   it('briefing endpoint returns compiled context for investigation', async () => {

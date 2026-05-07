@@ -313,6 +313,10 @@ function compileRules(data) {
         try { acc.push(new RegExp(pat)); } catch {}
         return acc;
       }, []);
+      entry.contentExclRe = (ft.contentExclusions || []).reduce((acc, pat) => {
+        try { acc.push(new RegExp(pat)); } catch {}
+        return acc;
+      }, []);
       if (ft.toolNames && Array.isArray(ft.toolNames) && ft.toolNames.length) {
         entry.toolNamesSet = new Set(ft.toolNames);
       }
@@ -448,11 +452,13 @@ function matchFileCompiled(filePath, entry, projectRoot, rulesData) {
   if (entry.exclRe && entry.exclRe.some(re => re.test(normalized))) return false;
   if (!entry.pathRe || !entry.pathRe.length) return false;
   if (!entry.pathRe.some(re => re.test(normalized))) return false;
-  if (entry.contentRe && entry.contentRe.length) {
-    try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        return entry.contentRe.some(re => re.test(content));
-    } catch { return false; }
+  const hasContentRe = entry.contentRe && entry.contentRe.length;
+  const hasContentExcl = entry.contentExclRe && entry.contentExclRe.length;
+  if (hasContentRe || hasContentExcl) {
+    let content;
+    try { content = fs.readFileSync(filePath, 'utf8'); } catch { return false; }
+    if (hasContentRe && !entry.contentRe.some(re => re.test(content))) return false;
+    if (hasContentExcl && entry.contentExclRe.some(re => re.test(content))) return false;
   }
   return true;
 }
@@ -712,7 +718,7 @@ function handleStop(input) {
   }
 
   if (!lines.length) return {};
-  return { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: lines.join('\n') } };
+  return { decision: 'block', reason: lines.join('\n') };
 }
 
 // --- Enforce handler ---
