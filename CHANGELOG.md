@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.8
+
+### Fixes
+
+- Pass `projectRoot` to async analyzer context. Analyzers can now access `context.projectRoot` to resolve relative file paths instead of relying on `__dirname` workarounds.
+
 ## 3.3.6
 
 ### Performance
