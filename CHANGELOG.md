@@ -6,6 +6,101 @@
 
 - Pass `projectRoot` to async analyzer context. Analyzers can now access `context.projectRoot` to resolve relative file paths instead of relying on `__dirname` workarounds.
 
+## 4.0.7
+
+### Features
+
+- Add `rule-consistency` skill for semantic rule analysis
+
+## 4.0.6
+
+### Fixes
+
+- Review findings: duplicate test port, pass raw `toolInput` to analyzers, docs cleanup
+
+## 4.0.5
+
+### Features
+
+- Expand async triggers to all handlers, remove checklists (replaced by async analysis)
+
+## 4.0.4
+
+### Fixes
+
+- Prevent infinite stop hook loop for unsatisfied checklist items
+- Review findings: duplicate test port, missing stop test, docs
+
+## 4.0.3
+
+### Features
+
+- Add `contentExclusions` for guardrail rules (exclude paths from content pattern matching)
+
+### Fixes
+
+- Stop hook schema validation corrections
+
+## 4.0.2
+
+### Refactoring
+
+- Server cleanup and review fixes
+- Extract helpers, eliminate redundant `getRequestContext` calls
+
+### Fixes
+
+- Address code review findings: `postMessage` safety, path traversal guard, error logging
+
+## 4.0.1
+
+Milestone release: async analysis system with worker threads.
+
+### Features
+
+- Async analysis system with worker threads and analyzer scripts
+- Integrate async analysis system into server lifecycle
+- Async manager for worker thread lifecycle and findings queue
+- Async worker for running analyzer scripts in `worker_threads`
+
+### Fixes
+
+- Invalidate `checklistCache` when rules files change
+
+## 3.4.1
+
+### Features
+
+- Session context: per-session state with project awareness
+- Context boost: inject additional context from rules into hook responses
+- Checklists: session-scoped checklists with completion tracking
+- Briefing endpoint: `/briefing` returns session-relevant context on start
+
+## 3.3.10
+
+### Chore
+
+- Remove dead `hook-helpers.sh` (replaced by HTTP server in v3)
+
+## 3.3.9
+
+### Fixes
+
+- Treat `approve` as alias for `ask` enforcement (closes #8)
+
+## 3.3.8
+
+### Refactoring
+
+- Extract `buildEnforcementResponse` to deduplicate block/ask/warn cascade
+
+## 3.3.7
+
+### Features
+
+- Add enforcement `ask` approval pattern for interactive rule confirmation
+- Expand PostToolUse matcher to include `Read|Grep` (output-trigger rules can now fire on read-only tools)
+
 ## 3.3.6
 
 ### Performance
@@ -256,6 +351,12 @@ Milestone release: stateless per-request cache and structural refactor. Consolid
 - Only auto-bump version on `[release]` commits (stop spurious CI bumps)
 - Correct hook nesting in `plugin.json` for Claude Code validator
 
+## 3.0.4
+
+### Fixes
+
+- Correct hook nesting in `plugin.json` for Claude Code validator
+
 ## 3.0.3
 
 ### Fixes
@@ -296,11 +397,19 @@ Milestone release: stateless per-request cache and structural refactor. Consolid
 
 - Add request body size limit to HTTP server
 
+## 2.0.1
+
+CI version bump of 2.0.0.
+
 ## 2.0.0
 
 ### Breaking
 
 - Remove hook-based activation and enforcement for performance (shell hooks too slow; replaced by HTTP server in v3)
+
+## 1.2.5
+
+CI version bump of 1.2.4.
 
 ## 1.2.4
 
@@ -308,11 +417,19 @@ Milestone release: stateless per-request cache and structural refactor. Consolid
 
 - Replace `node` with `jq` in `hook-helpers.sh` for faster JSON parsing
 
+## 1.2.3
+
+CI version bump of 1.2.2.
+
 ## 1.2.2
 
 ### Fixes
 
 - `hook-manager` uses correct Claude Code format (`matcher` string + `hooks` array)
+
+## 1.2.1
+
+CI version bump of 1.2.0.
 
 ## 1.2.0
 
@@ -343,6 +460,12 @@ Milestone release: stateless per-request cache and structural refactor. Consolid
 
 - `engine.js` imports glob matching from shared module
 - Extract glob tests to `glob-match.test.js`
+
+## 1.0.2
+
+### Chore
+
+- Remove stale superpowers planning docs
 
 ## 1.0.1
 
