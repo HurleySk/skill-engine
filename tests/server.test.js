@@ -2571,3 +2571,88 @@ describe('Skill Health Nudge', () => {
     }
   });
 });
+
+describe('Skill Feedback Signals Query Endpoint', () => {
+  let harness;
+  const PORT = 19785;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {}
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('GET /skill-feedback/signals returns all signals when no filters', async () => {
+    await request('POST', '/skill-feedback', {
+      skillName: 'a:skill', type: 'activation', summary: '', sessionId: 'sess-q1'
+    }, PORT);
+    await request('POST', '/skill-feedback', {
+      skillName: 'b:skill', type: 'correction', summary: 'x', sessionId: 'sess-q2'
+    }, PORT);
+
+    const res = await request('GET', '/skill-feedback/signals', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body));
+    assert.ok(res.body.length >= 2);
+  });
+
+  it('GET /skill-feedback/signals?sessionId=X filters by session', async () => {
+    await request('POST', '/skill-feedback', {
+      skillName: 'c:skill', type: 'activation', summary: '', sessionId: 'sess-filter-1'
+    }, PORT);
+    await request('POST', '/skill-feedback', {
+      skillName: 'd:skill', type: 'activation', summary: '', sessionId: 'sess-filter-2'
+    }, PORT);
+
+    const res = await request('GET', '/skill-feedback/signals?sessionId=sess-filter-1', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.every(s => s.sessionId === 'sess-filter-1'));
+  });
+
+  it('GET /skill-feedback/signals?skillName=X filters by skill', async () => {
+    await request('POST', '/skill-feedback', {
+      skillName: 'filter:target', type: 'correction', summary: 'a', sessionId: 'sess-f'
+    }, PORT);
+
+    const res = await request('GET', '/skill-feedback/signals?skillName=filter:target', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.length >= 1);
+    assert.ok(res.body.every(s => s.skillName === 'filter:target'));
+  });
+
+  it('GET /skill-feedback/signals?type=activation filters by type', async () => {
+    const res = await request('GET', '/skill-feedback/signals?type=activation', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.every(s => s.type === 'activation'));
+  });
+
+  it('GET /skill-feedback/signals?sessionId=X&type=Y combines filters', async () => {
+    await request('POST', '/skill-feedback', {
+      skillName: 'combo:skill', type: 'activation', summary: '', sessionId: 'sess-combo'
+    }, PORT);
+    await request('POST', '/skill-feedback', {
+      skillName: 'combo:skill', type: 'correction', summary: 'y', sessionId: 'sess-combo'
+    }, PORT);
+
+    const res = await request('GET', '/skill-feedback/signals?sessionId=sess-combo&type=activation', null, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.length >= 1);
+    assert.ok(res.body.every(s => s.sessionId === 'sess-combo' && s.type === 'activation'));
+  });
+
+  it('preserves checkpointId in round-trip', async () => {
+    await request('POST', '/skill-feedback', {
+      skillName: 'cp:skill', type: 'dismissal', summary: 'override',
+      checkpointId: 'design-spec', sessionId: 'sess-cp'
+    }, PORT);
+
+    const res = await request('GET', '/skill-feedback/signals?sessionId=sess-cp', null, PORT);
+    assert.equal(res.status, 200);
+    const match = res.body.find(s => s.skillName === 'cp:skill' && s.checkpointId === 'design-spec');
+    assert.ok(match, 'Should find signal with checkpointId');
+  });
+});

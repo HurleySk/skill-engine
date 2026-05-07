@@ -150,6 +150,17 @@ function getSignalsForSession(sessionId, options) {
   });
 }
 
+function getAllSignals(options) {
+  const includeResolved = options && options.includeResolved;
+  const typeFilter = options && options.type;
+  const signals = readAllSignals();
+  return signals.filter(s => {
+    if (!includeResolved && s.resolved) return false;
+    if (typeFilter && s.type !== typeFilter) return false;
+    return true;
+  });
+}
+
 function recount() {
   const cutoff = new Date(Date.now() - ROLLING_WINDOW_MS).toISOString();
   const signals = readAllSignals();
@@ -177,4 +188,4 @@ function recount() {
   writeThresholds(thresholds);
 }
 
-module.exports = { recordSignal, getThresholds, getHealth, clearSkill, getSignalsForSkill, getSignalsForSession, recount, _setBaseDir };
+module.exports = { recordSignal, getThresholds, getHealth, clearSkill, getSignalsForSkill, getSignalsForSession, getAllSignals, recount, _setBaseDir };
