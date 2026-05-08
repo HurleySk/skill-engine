@@ -364,6 +364,9 @@ function compileRules(data) {
     }
     if (rule.async) {
       const normalized = asyncEngine.registry.normalizeAsyncBlock(rule.async);
+      if (rule.async.analyzer && !rule.async.handler) {
+        compilationWarnings.push(name + ': deprecated async format — use { handler: "analyzer", name: "' + rule.async.analyzer + '" }');
+      }
       const errors = asyncEngine.registry.validateAsyncBlock(normalized);
       if (errors.length) {
         compilationWarnings.push(name + ': async config errors: ' + errors.join(', '));

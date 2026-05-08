@@ -6,10 +6,6 @@ module.exports = {
   name: 'hook',
 
   validate(config) {
-    const name = config && config.hookName;
-    if (name && !hooks.has(name)) {
-      return ['Unknown async hook: ' + name + '. Available: ' + Array.from(hooks.keys()).join(', ')];
-    }
     return [];
   },
 

@@ -21,14 +21,8 @@ describe('Hook Handler', () => {
     assert.equal(hookHandler.name, 'hook');
   });
 
-  it('validate returns errors for unregistered hook name', () => {
-    const errors = hookHandler.validate({ hookName: 'nonexistent' });
-    assert.ok(errors.length > 0);
-  });
-
-  it('validate passes for registered hook name', () => {
-    hookHandler.registerHook('my-scan', async () => []);
-    const errors = hookHandler.validate({ hookName: 'my-scan' });
+  it('validate always passes (validation deferred to execute)', () => {
+    const errors = hookHandler.validate({});
     assert.equal(errors.length, 0);
   });
 
