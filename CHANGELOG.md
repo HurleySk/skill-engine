@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.0.0
+
+### Breaking (internal)
+- Async subsystem extracted from `server.js` and `async-manager.js` into `server/async/` module directory
+- `async-manager.js` and `async-worker.js` replaced by modular equivalents
+- `/health` endpoint `asyncWorker` field renamed to `async` with richer structure
+
+### Added
+- Handler registry (`server/async/registry.js`) — typed handler registration with compile-time validation
+- Async hooks handler type — rules can now declare `async.handler: "hook"` for background hook work
+- New rule schema: `async: { handler, name, config }` (old `async: { analyzer }` format auto-mapped with deprecation warning)
+- Collector module (`server/async/collector.js`) — findings queue with formatting
+- Dispatcher module (`server/async/dispatcher.js`) — stateless rule-to-job translation
+- Executor module (`server/async/executor.js`) — worker thread lifecycle with result callbacks
+- Engine module (`server/async/engine.js`) — wiring layer, single entry point for server.js
+
+### Fixed
+- Async rule config errors now caught at rule compile time, not silently at runtime
+
 ## 4.0.8
 
 ### Fixes

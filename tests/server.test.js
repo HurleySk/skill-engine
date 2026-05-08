@@ -2160,15 +2160,18 @@ describe('Async Rule Compilation', () => {
     assert.equal(res.body.hasAsyncRules, true);
   });
 
-  it('GET /health includes asyncWorker status', async () => {
+  it('GET /health includes async status', async () => {
     const res = await request('GET', '/health', null, PORT);
     assert.equal(res.status, 200);
-    const aw = res.body.asyncWorker;
-    assert.ok(aw, 'should have asyncWorker field');
-    assert.equal(typeof aw.alive, 'boolean');
-    assert.equal(typeof aw.respawnCount, 'number');
-    assert.equal(typeof aw.jobsProcessed, 'number');
-    assert.equal(aw.degraded, false);
+    const a = res.body.async;
+    assert.ok(a, 'should have async field');
+    assert.ok(a.executor, 'should have executor sub-field');
+    assert.equal(typeof a.executor.alive, 'boolean');
+    assert.equal(typeof a.executor.respawnCount, 'number');
+    assert.equal(typeof a.executor.jobsProcessed, 'number');
+    assert.equal(a.executor.degraded, false);
+    assert.ok(a.registry, 'should have registry sub-field');
+    assert.ok(Array.isArray(a.registry.handlerTypes));
   });
 
   it('async rules are excluded from sync enforcement', async () => {
