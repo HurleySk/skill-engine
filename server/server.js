@@ -39,6 +39,24 @@ try {
 let totalResponseTimeNs = BigInt(0);
 let timedResponses = 0;
 
+// --- Audit log circular buffer (Feature: last 100 enforcement decisions) ---
+const AUDIT_LOG_MAX = 100;
+const auditLog = [];
+
+function recordAuditEntry(entry) {
+  auditLog.push(entry);
+  if (auditLog.length > AUDIT_LOG_MAX) auditLog.shift();
+}
+
+function getAuditLogSummary() {
+  if (!auditLog.length) return { entries: 0, oldestEntry: null, newestEntry: null };
+  return {
+    entries: auditLog.length,
+    oldestEntry: auditLog[0].timestamp,
+    newestEntry: auditLog[auditLog.length - 1].timestamp,
+  };
+}
+
 // --- Priority helpers ---
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 function getPriority(rule, defaults) {
@@ -72,10 +90,17 @@ class RuleCache {
     };
   }
 
+  invalidate(rulesDir) {
+    if (rulesDir) {
+      this._entries.delete(rulesDir);
+    }
+  }
+
   getRules(rulesDir) {
     if (!rulesDir) {
       return {
         compiledRules: [],
+        compilationWarnings: [],
         rulesData: { version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {} },
         hasToolTriggerRules: false,
         hasOutputTriggerRules: false,
@@ -108,7 +133,9 @@ class RuleCache {
       }
     }
 
-    const compiled = compileRules(rulesData);
+    const compileResult = compileRules(rulesData);
+    const compiled = compileResult.compiled;
+    const compilationWarnings = compileResult.compilationWarnings;
     const hasToolTriggerRules = compiled.some(e => e.toolTriggerNamesSet || (e.inputRe && e.inputRe.length));
     const hasOutputTriggerRules = compiled.some(e => e.outputToolNamesSet || (e.outputRe && e.outputRe.length));
     const hasStopRules = compiled.some(e => e.hookEventsSet && e.hookEventsSet.has('Stop'));
@@ -116,6 +143,7 @@ class RuleCache {
 
     const snapshot = Object.freeze({
       compiledRules: compiled,
+      compilationWarnings,
       rulesData,
       hasToolTriggerRules,
       hasOutputTriggerRules,
@@ -148,6 +176,9 @@ class RuleCache {
 }
 
 const ruleCache = new RuleCache();
+
+// --- Learn.js functions (for POST /learn endpoint) ---
+const learnLib = require(path.join(libDir, 'learn'));
 
 // --- Session Registry (replaces lastProjectDir) ---
 const crypto = require('crypto');
@@ -264,31 +295,45 @@ function getRequestContext(input) {
 
 // --- Pre-compiled rule compiler ---
 function compileRules(data) {
-  if (!data || !data.rules) return [];
+  if (!data || !data.rules) return { compiled: [], compilationWarnings: [] };
   const compiled = [];
+  const compilationWarnings = [];
+
+  function tryCompileRegex(ruleName, field, pattern, flags) {
+    try {
+      return new RegExp(pattern, flags);
+    } catch (err) {
+      compilationWarnings.push({ ruleName, field, pattern, error: err.message });
+      return null;
+    }
+  }
+
+  function compilePatternArray(ruleName, field, patterns, flags) {
+    const result = [];
+    for (const pat of patterns) {
+      const re = tryCompileRegex(ruleName, field, pat, flags);
+      if (re) result.push(re);
+    }
+    return result;
+  }
+
   for (const [name, rule] of Object.entries(data.rules)) {
-    const entry = { name, rule };
+    const entry = { name, rule, _compiledPatterns: {} };
     if (rule.sourceRepo) entry.sourceRepo = normalizePath(rule.sourceRepo);
     const pt = rule.triggers && rule.triggers.prompt;
     if (pt) {
       entry.keywordsLower = (pt.keywords || []).map(k => k.toLowerCase());
-      entry.intentRe = (pt.intentPatterns || []).reduce((acc, pat) => {
-        try { acc.push(new RegExp(pat, 'i')); } catch {}
-        return acc;
-      }, []);
+      entry.intentRe = compilePatternArray(name, 'triggers.prompt.intentPatterns', pt.intentPatterns || [], 'i');
+      entry._compiledPatterns.intentPatterns = { total: (pt.intentPatterns || []).length, compiled: entry.intentRe.length };
     }
     const ft = rule.triggers && rule.triggers.file;
     if (ft) {
       entry.pathRe = (ft.pathPatterns || []).map(p => globToRegex(p));
       entry.exclRe = (ft.pathExclusions || []).map(p => globToRegex(p));
-      entry.contentRe = (ft.contentPatterns || []).reduce((acc, pat) => {
-        try { acc.push(new RegExp(pat)); } catch {}
-        return acc;
-      }, []);
-      entry.contentExclRe = (ft.contentExclusions || []).reduce((acc, pat) => {
-        try { acc.push(new RegExp(pat)); } catch {}
-        return acc;
-      }, []);
+      entry.contentRe = compilePatternArray(name, 'triggers.file.contentPatterns', ft.contentPatterns || [], undefined);
+      entry._compiledPatterns.contentPatterns = { total: (ft.contentPatterns || []).length, compiled: entry.contentRe.length };
+      entry.contentExclRe = compilePatternArray(name, 'triggers.file.contentExclusions', ft.contentExclusions || [], undefined);
+      entry._compiledPatterns.contentExclusions = { total: (ft.contentExclusions || []).length, compiled: entry.contentExclRe.length };
       if (ft.toolNames && Array.isArray(ft.toolNames) && ft.toolNames.length) {
         entry.toolNamesSet = new Set(ft.toolNames);
       }
@@ -298,30 +343,24 @@ function compileRules(data) {
       if (tt.toolNames && Array.isArray(tt.toolNames) && tt.toolNames.length) {
         entry.toolTriggerNamesSet = new Set(tt.toolNames);
       }
-      entry.inputRe = (tt.inputPatterns || []).reduce((acc, pat) => {
-        try { acc.push(new RegExp(pat, 'i')); } catch {}
-        return acc;
-      }, []);
+      entry.inputRe = compilePatternArray(name, 'triggers.tool.inputPatterns', tt.inputPatterns || [], 'i');
+      entry._compiledPatterns.inputPatterns = { total: (tt.inputPatterns || []).length, compiled: entry.inputRe.length };
     }
     const ot = rule.triggers && rule.triggers.output;
     if (ot) {
       if (ot.toolNames && Array.isArray(ot.toolNames) && ot.toolNames.length) {
         entry.outputToolNamesSet = new Set(ot.toolNames);
       }
-      entry.outputRe = (ot.outputPatterns || []).reduce((acc, pat) => {
-        try { acc.push(new RegExp(pat, 'i')); } catch {}
-        return acc;
-      }, []);
+      entry.outputRe = compilePatternArray(name, 'triggers.output.outputPatterns', ot.outputPatterns || [], 'i');
+      entry._compiledPatterns.outputPatterns = { total: (ot.outputPatterns || []).length, compiled: entry.outputRe.length };
     }
     if (rule.hookEvents && Array.isArray(rule.hookEvents)) {
       entry.hookEventsSet = new Set(rule.hookEvents);
     }
     if (rule.contextBoost) {
       entry.boostWeight = rule.contextBoost.weight || 0.3;
-      entry.boostRe = (rule.contextBoost.patterns || []).reduce((acc, pat) => {
-        try { acc.push(new RegExp(pat, 'i')); } catch {}
-        return acc;
-      }, []);
+      entry.boostRe = compilePatternArray(name, 'contextBoost.patterns', rule.contextBoost.patterns || [], 'i');
+      entry._compiledPatterns.boostPatterns = { total: (rule.contextBoost.patterns || []).length, compiled: entry.boostRe.length };
     }
     if (rule.async && rule.async.analyzer) {
       entry.isAsync = true;
@@ -331,7 +370,7 @@ function compileRules(data) {
     compiled.push(entry);
   }
 
-  return compiled;
+  return { compiled, compilationWarnings };
 }
 
 // --- Session tracking (keyed by sessionId + '|' + projectRoot) ---
@@ -896,6 +935,7 @@ async function handleRequest(req, res) {
 
     return respond(res, 200, {
       version: SERVER_VERSION,
+      cacheDir: path.resolve(__dirname, '..'),
       pid: process.pid,
       uptime: process.uptime(),
       rulesLoaded: ctx.compiledRules.length,
@@ -917,6 +957,11 @@ async function handleRequest(req, res) {
       ),
       cache: cacheState,
       deprecatedSetProjectCalls,
+      auditLog: getAuditLogSummary(),
+      compilationWarnings: {
+        count: (ctx.compilationWarnings || []).length,
+        details: ctx.compilationWarnings || [],
+      },
     });
   }
 
@@ -936,17 +981,23 @@ async function handleRequest(req, res) {
         sourceRepo: e.sourceRepo || null,
         triggers: Object.keys(e.rule.triggers || {}),
         hookEvents: e.rule.hookEvents || null,
+        compiledPatterns: e._compiledPatterns || {},
       }));
+      const warnings = (cached.compilationWarnings || []).filter(w =>
+        rules.some(r => r.name === w.ruleName)
+      );
       return respond(res, 200, {
         session: sessionFilter,
         projectDir: entry.projectDir,
         rulesDir: entry.rulesDir,
         count: rules.length,
+        compilationWarnings: warnings,
         rules,
       });
     }
 
     const allRules = [];
+    const allWarnings = [];
     for (const [sid, entry] of sessionRegistry) {
       const cached = ruleCache.getRules(entry.rulesDir);
       for (const e of cached.compiledRules) {
@@ -961,10 +1012,14 @@ async function handleRequest(req, res) {
           sourceRepo: e.sourceRepo || null,
           triggers: Object.keys(e.rule.triggers || {}),
           hookEvents: e.rule.hookEvents || null,
+          compiledPatterns: e._compiledPatterns || {},
         });
       }
+      if (cached.compilationWarnings && cached.compilationWarnings.length) {
+        allWarnings.push(...cached.compilationWarnings.map(w => ({ session: sid, ...w })));
+      }
     }
-    return respond(res, 200, { count: allRules.length, rules: allRules });
+    return respond(res, 200, { count: allRules.length, compilationWarnings: allWarnings, rules: allRules });
   }
 
   if (method === 'GET' && (url === '/briefing' || url.startsWith('/briefing?'))) {
@@ -1024,6 +1079,149 @@ async function handleRequest(req, res) {
     return respond(res, 200, { cleared: true });
   }
 
+  // --- GET /audit-log ---
+  if (method === 'GET' && url === '/audit-log') {
+    const result = auditLog.slice().reverse();
+    return respond(res, 200, result);
+  }
+
+  // --- POST /test-rule ---
+  if (method === 'POST' && url === '/test-rule') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (!body) return respond(res, 400, { error: 'Request body required' });
+
+    const simulatedPath = body.simulatedPath || null;
+    const simulatedContent = body.simulatedContent || null;
+    const ruleName = body.ruleName || null;
+
+    const ctx = getRequestContext(body);
+    if (!ctx.projectRoot) return respond(res, 400, { error: 'No project registered — cannot resolve rules' });
+
+    // Helper: test a single compiled entry against simulated path/content
+    function testRuleEntry(entry) {
+      const result = { name: entry.name, matched: false, pathMatched: false, contentMatched: false,
+        enforcement: getEnforcement(entry.rule, ctx.rulesData.defaults),
+        message: null };
+
+      if (!simulatedPath) return result;
+      if (!entry.pathRe || !entry.pathRe.length) return result;
+
+      // Normalize and relativize path the same way matchFileCompiled does
+      let normalized = normalizePath(simulatedPath);
+      if (ctx.projectRoot) {
+        const root = IS_WIN ? ctx.projectRoot.toLowerCase() : ctx.projectRoot;
+        const test = IS_WIN ? normalized.toLowerCase() : normalized;
+        if (test.startsWith(root + '/')) {
+          normalized = normalized.slice(ctx.projectRoot.length + 1);
+        }
+      }
+
+      // Check path exclusions
+      if (entry.exclRe && entry.exclRe.some(re => re.test(normalized))) return result;
+
+      // Check path patterns
+      if (!entry.pathRe.some(re => re.test(normalized))) return result;
+      result.pathMatched = true;
+
+      // Content matching (against simulatedContent instead of reading file)
+      const hasContentRe = entry.contentRe && entry.contentRe.length;
+      const hasContentExcl = entry.contentExclRe && entry.contentExclRe.length;
+      if (hasContentRe || hasContentExcl) {
+        const content = simulatedContent || '';
+        if (hasContentRe && !entry.contentRe.some(re => re.test(content))) return result;
+        if (hasContentExcl && entry.contentExclRe.some(re => re.test(content))) return result;
+      }
+      result.contentMatched = true;
+      result.matched = true;
+
+      // Build message
+      if (result.enforcement === 'block') {
+        result.message = entry.rule.blockMessage || ('Blocked by rule: ' + entry.name);
+      } else if (result.enforcement === 'ask') {
+        result.message = entry.rule.askMessage || entry.rule.blockMessage || ('Requires approval: ' + entry.name);
+      } else if (result.enforcement === 'warn') {
+        result.message = entry.rule.description || ('Warning from rule: ' + entry.name);
+      }
+
+      return result;
+    }
+
+    if (ruleName) {
+      // Test a specific rule
+      const entry = ctx.compiledRules.find(e => e.name === ruleName);
+      if (!entry) return respond(res, 404, { error: 'Rule not found: ' + ruleName });
+      return respond(res, 200, testRuleEntry(entry));
+    }
+
+    // Test ALL rules
+    const results = [];
+    for (const entry of ctx.compiledRules) {
+      if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
+      const r = testRuleEntry(entry);
+      if (r.matched) results.push(r);
+    }
+    return respond(res, 200, results);
+  }
+
+  // --- POST /learn ---
+  if (method === 'POST' && url === '/learn') {
+    let body = null;
+    try { body = await readBody(req); } catch {}
+    if (!body || !body.action) {
+      return respond(res, 400, { error: 'action field required (add, update, remove, promote, list)' });
+    }
+
+    // Resolve rulesDir from session or fallback
+    let rulesDir = null;
+    if (body.session_id && sessionRegistry.has(body.session_id)) {
+      rulesDir = sessionRegistry.get(body.session_id).rulesDir;
+    } else if (lastRegisteredSessionId && sessionRegistry.has(lastRegisteredSessionId)) {
+      rulesDir = sessionRegistry.get(lastRegisteredSessionId).rulesDir;
+    }
+    if (!rulesDir) {
+      const ctx = getRequestContext(null);
+      rulesDir = ctx.rulesDir;
+    }
+    if (!rulesDir) {
+      return respond(res, 400, { error: 'No session registered — cannot resolve rulesDir' });
+    }
+
+    const learnedFile = path.join(rulesDir, 'learned-rules.json');
+    const action = body.action;
+
+    try {
+      let result;
+      if (action === 'add') {
+        if (!body.name || !body.rule) return respond(res, 400, { error: 'name and rule required for add' });
+        result = learnLib.add(body.name, body.rule, learnedFile);
+      } else if (action === 'update') {
+        if (!body.name || !body.rule) return respond(res, 400, { error: 'name and rule required for update' });
+        result = learnLib.update(body.name, body.rule, learnedFile);
+      } else if (action === 'remove') {
+        if (!body.name) return respond(res, 400, { error: 'name required for remove' });
+        result = learnLib.remove(body.name, learnedFile);
+      } else if (action === 'promote') {
+        if (!body.name) return respond(res, 400, { error: 'name required for promote' });
+        const toFile = body.toFile || path.join(rulesDir, 'skill-rules.json');
+        result = learnLib.promote(body.name, learnedFile, toFile);
+      } else if (action === 'list') {
+        result = learnLib.list(learnedFile);
+      } else {
+        return respond(res, 400, { error: 'Unknown action: ' + action + '. Use add, update, remove, promote, or list.' });
+      }
+
+      // Invalidate cache after mutations so next request picks up changes
+      if (result && result.ok && action !== 'list') {
+        ruleCache.invalidate(rulesDir);
+      }
+
+      return respond(res, 200, result);
+    } catch (err) {
+      return respond(res, 500, { ok: false, error: err.message });
+    }
+  }
+
   // Route table for POST handler endpoints
   const route = method === 'POST' && routes[url];
   if (route) {
@@ -1033,9 +1231,42 @@ async function handleRequest(req, res) {
       lastEvent = route.event;
       const result = route.handler(body);
       const elapsed = process.hrtime.bigint() - startNs;
+      const elapsedMs = Number(elapsed) / 1e6;
       totalResponseTimeNs += elapsed;
       timedResponses++;
-      res.setHeader('X-Response-Time', (Number(elapsed) / 1e6).toFixed(2) + 'ms');
+      res.setHeader('X-Response-Time', elapsedMs.toFixed(2) + 'ms');
+
+      // Record audit entry for enforcement routes
+      const hso = result && result.hookSpecificOutput;
+      const decision = (hso && hso.permissionDecision) || 'allow';
+      const toolName = (body && body.tool_name) || null;
+      const filePath = (body && body.tool_input && body.tool_input.file_path) || null;
+      // Count rules checked/matched from context
+      const ctx = (!paused && process.env.SKILL_ENGINE_OFF !== '1') ? getRequestContext(body) : null;
+      const rulesChecked = ctx ? ctx.compiledRules.length : 0;
+      // Extract matched rule names from the reason string
+      const rulesMatched = [];
+      if (hso && hso.permissionDecisionReason) {
+        // Reason contains rule name after "Blocked by rule: " or "Requires approval: "
+        const reasonMatch = hso.permissionDecisionReason.match(/(?:Blocked by rule|Requires approval): (.+)/);
+        if (reasonMatch) rulesMatched.push(reasonMatch[1]);
+      }
+      if (hso && hso.additionalContext) {
+        // Warnings contain "⚠️ ruleName: description"
+        const warnMatches = hso.additionalContext.matchAll(/⚠️ ([^:]+):/g);
+        for (const wm of warnMatches) rulesMatched.push(wm[1].trim());
+      }
+      recordAuditEntry({
+        timestamp: new Date().toISOString(),
+        endpoint: url,
+        tool: toolName,
+        filePath,
+        rulesChecked,
+        rulesMatched,
+        enforcement: decision,
+        responseTimeMs: Math.round(elapsedMs * 100) / 100,
+      });
+
       return respond(res, 200, result);
     } catch {
       return respond(res, 400, { error: 'Invalid JSON' });
