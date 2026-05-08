@@ -15,15 +15,14 @@ function loadAnalyzer(projectRoot, analyzerName) {
 
   const analyzerPath = path.join(projectRoot, '.claude', 'skills', 'analyzers', analyzerName + '.js');
   try {
+    delete require.cache[require.resolve(analyzerPath)];
+  } catch {}
+  try {
     const mod = require(analyzerPath);
-    if (typeof mod.analyze !== 'function') {
-      analyzerCache.set(key, null);
-      return null;
-    }
+    if (typeof mod.analyze !== 'function') return null;
     analyzerCache.set(key, mod.analyze);
     return mod.analyze;
   } catch {
-    analyzerCache.set(key, null);
     return null;
   }
 }
