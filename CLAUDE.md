@@ -25,6 +25,16 @@ Server tests spawn real processes on ports 19751-19785. Ensure those ports are f
 - `.claude-plugin/plugin.json` — plugin metadata, version, hook definitions
 - `skills/` — SKILL.md files for each slash command (includes `skill-improve`, `debrief`, `using-skill-engine-skills`)
 
+## Setup
+
+After cloning, install the local git hooks:
+
+```bash
+bash hooks/git/setup-hooks.sh
+```
+
+This installs a `commit-msg` hook that auto-bumps `plugin.json` version on `[release]` commits, preventing version mismatch between the local source and the published plugin cache.
+
 ## Release Procedure
 
 1. Commit changes with conventional prefixes: `feat:`, `fix:`, `perf:`, `docs:`, `refactor:`, `test:`
@@ -32,15 +42,12 @@ Server tests spawn real processes on ports 19751-19785. Ensure those ports are f
    ```bash
    git commit -m "[release] description of what changed"
    ```
+   The local `commit-msg` hook bumps `plugin.json` version automatically.
 3. Push to master. CI (`.github/workflows/version-bump.yml`) will:
-   - Bump patch version in `.claude-plugin/plugin.json`
-   - Commit as `[release] vX.Y.Z` and create git tag
+   - Detect the version was already bumped locally (skips redundant bump)
+   - Create git tag `vX.Y.Z`
    - Dispatch update to HurleySk/claude-plugins-marketplace
-4. Pull to get the CI bot's version bump commit:
-   ```bash
-   git pull
-   ```
-5. After `/reload-plugins` in a session, run `/skill-engine:start` to restart the server to the new version.
+4. After `/reload-plugins` in a session, run `/skill-engine:start` to restart the server to the new version.
 
 Multiple fix commits can precede a single `[release]` commit. Non-release pushes sync the current version to the marketplace without bumping.
 
