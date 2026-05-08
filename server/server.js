@@ -1322,6 +1322,15 @@ const server = http.createServer((req, res) => {
   });
 });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    process.stderr.write('skill-engine: port ' + PORT + ' already in use, exiting.\n');
+    process.exit(0);
+  }
+  process.stderr.write('skill-engine: server error: ' + err.message + '\n');
+  process.exit(1);
+});
+
 server.listen(PORT, '127.0.0.1', () => {
   process.stdout.write('skill-engine server listening on port ' + PORT + '\n');
 });
