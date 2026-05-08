@@ -37,10 +37,15 @@ _kill_by_port() {
 }
 
 register_session() {
-  local SESSION_ID="${CLAUDE_SESSION_ID:-$(node -e "console.log(require('crypto').createHash('md5').update(process.argv[1]).digest('hex').slice(0,16))" "$CLAUDE_PROJECT_DIR" 2>/dev/null)}"
+  # On Windows/Git Bash, convert /c/Users/... to C:/Users/... so Node.js fs resolves correctly
+  local PROJECT_DIR="$CLAUDE_PROJECT_DIR"
+  if [[ "$PROJECT_DIR" =~ ^/[a-zA-Z]/ ]]; then
+    PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -W)" || PROJECT_DIR="$CLAUDE_PROJECT_DIR"
+  fi
+  local SESSION_ID="${CLAUDE_SESSION_ID:-$(node -e "console.log(require('crypto').createHash('md5').update(process.argv[1]).digest('hex').slice(0,16))" "$PROJECT_DIR" 2>/dev/null)}"
   local PAYLOAD
   PAYLOAD=$(node -e "console.log(JSON.stringify({sessionId:process.argv[1],projectDir:process.argv[2]}))" \
-    "$SESSION_ID" "$CLAUDE_PROJECT_DIR" 2>/dev/null)
+    "$SESSION_ID" "$PROJECT_DIR" 2>/dev/null)
   local RESULT
   RESULT=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 -X POST -H "Content-Type: application/json" \
     -d "$PAYLOAD" \
@@ -50,7 +55,7 @@ register_session() {
   fi
   # Fallback to /set-project for older servers without /register-session
   local SET_PAYLOAD
-  SET_PAYLOAD=$(node -e "console.log(JSON.stringify({projectDir:process.argv[1]}))" "$CLAUDE_PROJECT_DIR" 2>/dev/null)
+  SET_PAYLOAD=$(node -e "console.log(JSON.stringify({projectDir:process.argv[1]}))" "$PROJECT_DIR" 2>/dev/null)
   curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
     -d "$SET_PAYLOAD" \
     "http://localhost:$PORT/set-project" > /dev/null 2>&1
