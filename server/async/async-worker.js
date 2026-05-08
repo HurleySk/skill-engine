@@ -20,7 +20,8 @@ function withTimeout(promise, ms) {
 
 parentPort.on('message', async (msg) => {
   const start = Date.now();
-  const { id, sessionId, handlerType, handlerName, config, context } = msg;
+  const { id, sessionId, projectRoot, handlerType, handlerName, config, context: rawContext } = msg;
+  const context = { ...rawContext, projectRoot };
   const ruleName = context && context.ruleName;
 
   const handler = handlers[handlerType];
