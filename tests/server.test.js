@@ -2659,3 +2659,265 @@ describe('Skill Feedback Signals Query Endpoint', () => {
     assert.ok(match, 'Should find signal with checkpointId');
   });
 });
+
+describe('Trigger Index: output triggers', () => {
+  let harness;
+  const PORT = 19790;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'read-error-rule': {
+          type: 'domain',
+          enforcement: 'suggest',
+          description: 'Read error detected',
+          guidance: 'Read-specific guidance here',
+          triggers: {
+            output: {
+              toolNames: ['Read'],
+              outputPatterns: ['ERROR_MARKER']
+            }
+          }
+        },
+        'grep-error-rule': {
+          type: 'domain',
+          enforcement: 'suggest',
+          description: 'Grep error detected',
+          guidance: 'Grep-specific guidance here',
+          triggers: {
+            output: {
+              toolNames: ['Grep'],
+              outputPatterns: ['ERROR_MARKER']
+            }
+          }
+        },
+        'wildcard-output-rule': {
+          type: 'domain',
+          enforcement: 'suggest',
+          description: 'Wildcard output match',
+          guidance: 'Wildcard guidance here',
+          triggers: {
+            output: {
+              outputPatterns: ['WILDCARD_PATTERN']
+            }
+          }
+        },
+        'prompt-only-rule': {
+          type: 'domain',
+          description: 'Prompt-only rule',
+          guidance: 'Should never fire on PostToolUse',
+          triggers: {
+            prompt: { keywords: ['some-keyword'] }
+          }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('output trigger index maps Read toolName to read-error-rule', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Read',
+      tool_output: 'file contains ERROR_MARKER in output'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput, 'should have output for Read');
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('Read-specific guidance'));
+    assert.ok(!res.body.hookSpecificOutput.additionalContext.includes('Grep-specific guidance'),
+      'should NOT include Grep rule for Read tool');
+  });
+
+  it('output trigger index maps Grep toolName to grep-error-rule', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Grep',
+      tool_output: 'matches: ERROR_MARKER found'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput, 'should have output for Grep');
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('Grep-specific guidance'));
+    assert.ok(!res.body.hookSpecificOutput.additionalContext.includes('Read-specific guidance'),
+      'should NOT include Read rule for Grep tool');
+  });
+
+  it('PostToolUse for Bash does not match tool-specific output rules', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Bash',
+      tool_output: 'ERROR_MARKER present'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput || !res.body.hookSpecificOutput.additionalContext.includes('Read-specific'),
+      'should not fire Read rule for Bash');
+    assert.ok(!res.body.hookSpecificOutput || !res.body.hookSpecificOutput.additionalContext.includes('Grep-specific'),
+      'should not fire Grep rule for Bash');
+  });
+
+  it('wildcard output rules fire for any tool', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Bash',
+      tool_output: 'WILDCARD_PATTERN detected'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput, 'wildcard should match Bash');
+    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('Wildcard guidance'));
+  });
+
+  it('wildcard output rules also fire alongside indexed rules', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Read',
+      tool_output: 'ERROR_MARKER and WILDCARD_PATTERN both present'
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput);
+    const ctx = res.body.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('Read-specific guidance'), 'indexed rule should fire');
+    assert.ok(ctx.includes('Wildcard guidance'), 'wildcard rule should also fire');
+  });
+
+  it('rules without output triggers are not in output index', async () => {
+    const res = await request('POST', '/post-tool', {
+      tool_name: 'Read',
+      tool_output: 'some-keyword in output'
+    }, PORT);
+    assert.equal(res.status, 200);
+    // prompt-only-rule should never fire on PostToolUse
+    assert.ok(!res.body.hookSpecificOutput || !res.body.hookSpecificOutput.additionalContext.includes('Prompt-only'),
+      'prompt-only rule should not fire on PostToolUse');
+  });
+});
+
+describe('Trigger Index: tool triggers', () => {
+  let harness;
+  const PORT = 19791;
+
+  before(async () => {
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'bash-guardrail': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'Block dangerous Bash',
+          blockMessage: 'Bash danger blocked',
+          triggers: {
+            tool: {
+              toolNames: ['Bash'],
+              inputPatterns: ['DANGER_CMD']
+            }
+          }
+        },
+        'powershell-guardrail': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'Block dangerous PowerShell',
+          blockMessage: 'PowerShell danger blocked',
+          triggers: {
+            tool: {
+              toolNames: ['PowerShell'],
+              inputPatterns: ['DANGER_CMD']
+            }
+          }
+        },
+        'wildcard-tool-guardrail': {
+          type: 'guardrail',
+          enforcement: 'warn',
+          description: 'Warn on any tool with secret',
+          triggers: {
+            tool: {
+              inputPatterns: ['SECRET_TOKEN']
+            }
+          }
+        },
+        'file-only-rule': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'File path rule',
+          triggers: {
+            file: {
+              pathPatterns: ['**/secret.json']
+            }
+          }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness); });
+
+  it('tool trigger index maps Bash to bash-guardrail', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'DANGER_CMD here' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('Bash danger'));
+  });
+
+  it('tool trigger index maps PowerShell to powershell-guardrail', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'PowerShell',
+      tool_input: { command: 'DANGER_CMD here' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('PowerShell danger'));
+  });
+
+  it('Bash enforcement does not evaluate PowerShell rules', async () => {
+    // If we send a non-matching input for Bash, only Bash rules are checked
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'safe command' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'no rules should match safe Bash command');
+  });
+
+  it('Read tool does not trigger Bash or PowerShell rules', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Read',
+      tool_input: { command: 'DANGER_CMD here' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'Read should not match Bash/PowerShell rules');
+  });
+
+  it('wildcard tool rules fire for any tool', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Read',
+      tool_input: { file_path: 'SECRET_TOKEN_in_path' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput, 'wildcard tool rule should match Read');
+    // warn enforcement returns allow with additionalContext
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'allow');
+  });
+
+  it('wildcard tool rules fire alongside indexed rules', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'DANGER_CMD with SECRET_TOKEN' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.hookSpecificOutput);
+    // block takes precedence over warn
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('Bash danger'));
+  });
+
+  it('file-only rules are not in tool trigger index', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Write',
+      tool_input: { file_path: '/tmp/secret.json', content: 'data' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    // file-only-rule should not fire via enforce-tool (it fires via /enforce)
+    assert.ok(!res.body.hookSpecificOutput, 'file-only rule should not be in tool trigger index');
+  });
+});

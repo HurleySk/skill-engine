@@ -106,6 +106,10 @@ class RuleCache {
         hasOutputTriggerRules: false,
         hasStopRules: false,
         hasAsyncRules: false,
+        outputTriggerIndex: new Map(),
+        toolTriggerIndex: new Map(),
+        outputWildcardRules: [],
+        toolWildcardRules: [],
       };
     }
     const mainFile = path.join(rulesDir, 'skill-rules.json');
@@ -149,6 +153,10 @@ class RuleCache {
       hasOutputTriggerRules,
       hasStopRules,
       hasAsyncRules,
+      outputTriggerIndex: compileResult.outputTriggerIndex,
+      toolTriggerIndex: compileResult.toolTriggerIndex,
+      outputWildcardRules: compileResult.outputWildcardRules,
+      toolWildcardRules: compileResult.toolWildcardRules,
     });
 
     // LRU eviction
@@ -280,6 +288,10 @@ function getRequestContext(input) {
       hasOutputTriggerRules: false,
       hasStopRules: false,
       hasAsyncRules: false,
+      outputTriggerIndex: new Map(),
+      toolTriggerIndex: new Map(),
+      outputWildcardRules: [],
+      toolWildcardRules: [],
     };
   }
 
@@ -380,7 +392,35 @@ function compileRules(data) {
     compiled.push(entry);
   }
 
-  return { compiled, compilationWarnings };
+  // Build trigger indexes: toolName -> CompiledRule[]
+  const outputTriggerIndex = new Map();
+  const toolTriggerIndex = new Map();
+  // Wildcard rules: have trigger patterns but no specific toolNames constraint
+  const outputWildcardRules = [];
+  const toolWildcardRules = [];
+
+  for (const entry of compiled) {
+    if (entry.outputToolNamesSet) {
+      for (const name of entry.outputToolNamesSet) {
+        if (!outputTriggerIndex.has(name)) outputTriggerIndex.set(name, []);
+        outputTriggerIndex.get(name).push(entry);
+      }
+    } else if (entry.outputRe && entry.outputRe.length) {
+      // Output pattern without toolNames — matches any tool
+      outputWildcardRules.push(entry);
+    }
+    if (entry.toolTriggerNamesSet) {
+      for (const name of entry.toolTriggerNamesSet) {
+        if (!toolTriggerIndex.has(name)) toolTriggerIndex.set(name, []);
+        toolTriggerIndex.get(name).push(entry);
+      }
+    } else if (entry.inputRe && entry.inputRe.length) {
+      // Input pattern without toolNames — matches any tool
+      toolWildcardRules.push(entry);
+    }
+  }
+
+  return { compiled, compilationWarnings, outputTriggerIndex, toolTriggerIndex, outputWildcardRules, toolWildcardRules };
 }
 
 // --- Session tracking (keyed by sessionId + '|' + projectRoot) ---
@@ -660,7 +700,12 @@ function handleEnforceTool(input, ctx) {
   const inputStr = toolInput ? JSON.stringify(toolInput) : '';
   const session = getSession(input.session_id, ctx.projectRoot);
 
-  const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
+  // Use index: only evaluate rules relevant to this toolName
+  const relevantRules = toolName
+    ? (ctx.toolTriggerIndex.get(toolName) || []).concat(ctx.toolWildcardRules)
+    : ctx.toolWildcardRules;
+
+  const matches = collectMatches(relevantRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
     if (entry.rule.type !== 'guardrail') return false;
     if (entry.isAsync) return false;
@@ -672,8 +717,11 @@ function handleEnforceTool(input, ctx) {
     return { enforcement };
   });
 
-  // Dispatch async jobs for async rules with tool triggers
-  asyncEngine.dispatch(ctx, input, (entry) => {
+  // Dispatch async jobs for async rules with tool triggers (use indexed subset)
+  const asyncRelevantRules = toolName
+    ? (ctx.toolTriggerIndex.get(toolName) || []).concat(ctx.toolWildcardRules)
+    : ctx.toolWildcardRules;
+  asyncEngine.dispatch({ ...ctx, compiledRules: asyncRelevantRules }, input, (entry) => {
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
     if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) return false;
     if (entry.toolTriggerNamesSet && !toolName) return false;
@@ -693,9 +741,12 @@ function handlePostTool(input, ctx) {
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
   const sid = input && input.session_id;
 
-  // Dispatch async jobs for async rules with output triggers
+  // Dispatch async jobs for async rules with output triggers (use indexed subset)
   if (ctx.hasAsyncRules) {
-    asyncEngine.dispatch(ctx, input, (entry) => {
+    const asyncRelevantRules = toolName
+      ? (ctx.outputTriggerIndex.get(toolName) || []).concat(ctx.outputWildcardRules)
+      : ctx.outputWildcardRules;
+    asyncEngine.dispatch({ ...ctx, compiledRules: asyncRelevantRules }, input, (entry) => {
       if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
       if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
       if (entry.outputToolNamesSet && !toolName) return false;
@@ -706,10 +757,13 @@ function handlePostTool(input, ctx) {
 
   const lines = [];
 
-  // Sync output trigger rules
+  // Sync output trigger rules (use indexed subset)
   if (ctx.hasOutputTriggerRules) {
+    const relevantRules = toolName
+      ? (ctx.outputTriggerIndex.get(toolName) || []).concat(ctx.outputWildcardRules)
+      : ctx.outputWildcardRules;
     const session = getSession(sid, ctx.projectRoot);
-    const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
+    const matches = collectMatches(relevantRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
       if (entry.isAsync) return false;
       if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
       if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
