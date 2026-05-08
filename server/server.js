@@ -9,7 +9,7 @@ const libDir = path.resolve(__dirname, '..', 'hooks', 'lib');
 const { normalizePath, globToRegex } = require(path.join(libDir, 'glob-match'));
 const { loadRules } = require(path.join(libDir, 'rules-io'));
 const { handlePreWrite: preWriteHandler } = require('./pre-write-safety');
-const asyncManager = require('./async-manager');
+const asyncEngine = require('./async/engine');
 const skillFeedback = require('./skill-feedback');
 
 // --- CLI args (keep --port for tests) ---
@@ -362,10 +362,17 @@ function compileRules(data) {
       entry.boostRe = compilePatternArray(name, 'contextBoost.patterns', rule.contextBoost.patterns || [], 'i');
       entry._compiledPatterns.boostPatterns = { total: (rule.contextBoost.patterns || []).length, compiled: entry.boostRe.length };
     }
-    if (rule.async && rule.async.analyzer) {
-      entry.isAsync = true;
-      entry.asyncAnalyzer = rule.async.analyzer;
-      entry.asyncConfig = rule.async.config || {};
+    if (rule.async) {
+      const normalized = asyncEngine.registry.normalizeAsyncBlock(rule.async);
+      const errors = asyncEngine.registry.validateAsyncBlock(normalized);
+      if (errors.length) {
+        compilationWarnings.push(name + ': async config errors: ' + errors.join(', '));
+      } else {
+        entry.isAsync = true;
+        entry.asyncHandler = normalized.handler;
+        entry.asyncHandlerName = normalized.name;
+        entry.asyncConfig = normalized.config || {};
+      }
     }
     compiled.push(entry);
   }
@@ -404,7 +411,7 @@ function cleanStaleSessions() {
     const reg = sessionRegistry.get(id);
     if (!reg || reg.lastRequest < cutoff) sessionContexts.delete(id);
   }
-  asyncManager.clearStaleSessions(sessionRegistry);
+  asyncEngine.clearStaleSessions(sessionRegistry);
 }
 
 const cleanupInterval = setInterval(cleanStaleSessions, 5 * 60 * 1000);
@@ -513,25 +520,6 @@ function recordSessionOnce(session, matches) {
   }
 }
 
-function formatAsyncFindings(findings) {
-  const lines = [];
-  lines.push('───────────────────────────────');
-  lines.push('⚠️ Async Analysis Results (' + findings.length + ' finding' + (findings.length > 1 ? 's' : '') + '):');
-  lines.push('');
-  for (const f of findings) {
-    if (typeof f === 'string') {
-      lines.push('ℹ️ ' + f);
-      continue;
-    }
-    const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
-    lines.push(prefix + ' ' + f.message);
-    if (f.relatedFiles && f.relatedFiles.length) {
-      lines.push('  Related: ' + f.relatedFiles.join(', '));
-    }
-  }
-  lines.push('');
-  return lines;
-}
 
 function buildEnforcementResponse(matches) {
   if (!matches.length) return {};
@@ -565,24 +553,6 @@ function initializeSessionContexts(sessionId, matches) {
   }
 }
 
-// --- Async dispatch helper (fires from any handler) ---
-function dispatchAsyncJobs(ctx, input, matchFn, contextBuilder) {
-  if (!ctx || !ctx.hasAsyncRules) return;
-  const session = getSession(input.session_id, ctx.projectRoot);
-  for (const entry of ctx.compiledRules) {
-    if (!entry.isAsync) continue;
-    if (!ruleMatchesProject(entry, ctx.projectRoot)) continue;
-    if (checkSkip(entry.name, entry.rule, session)) continue;
-    if (!matchFn(entry)) continue;
-    asyncManager.postJob({
-      sessionId: input.session_id || 'unknown',
-      projectRoot: ctx.projectRoot,
-      analyzer: entry.asyncAnalyzer,
-      config: entry.asyncConfig,
-      context: { ...contextBuilder(entry), ruleName: entry.name },
-    });
-  }
-}
 
 // --- Activate handler ---
 function handleActivate(input) {
@@ -598,11 +568,11 @@ function handleActivate(input) {
     return {};
   });
   if (!matches.length) {
-    const asyncFindings = input && input.session_id ? asyncManager.drainFindings(input.session_id) : [];
+    const asyncLines = input && input.session_id ? asyncEngine.drain(input.session_id) : [];
     const health = skillFeedback.getHealth();
-    if (!asyncFindings.length && !health.flagged.length) return {};
+    if (!asyncLines.length && !health.flagged.length) return {};
     const outLines = [];
-    if (asyncFindings.length) outLines.push(...formatAsyncFindings(asyncFindings));
+    if (asyncLines.length) outLines.push(...asyncLines);
     if (health.flagged.length) {
       const skillList = health.flagged.map(f => f.skillName).join(', ');
       if (outLines.length) outLines.push('');
@@ -629,10 +599,10 @@ function handleActivate(input) {
   }
 
   // Dispatch async jobs for async rules matching this prompt
-  dispatchAsyncJobs(ctx, input, (entry) => {
+  asyncEngine.dispatch(ctx, input, (entry) => {
     if (!entry.keywordsLower && !entry.intentRe && !entry.boostRe) return false;
     return matchPromptWithBoost(prompt, entry);
-  }, () => ({ prompt }));
+  }, () => ({ prompt }), { getSession, checkSkip, ruleMatchesProject });
 
   const count = matches.length;
   const lines = [
@@ -658,9 +628,9 @@ function handleActivate(input) {
   }
 
   // Drain async findings for this session
-  const asyncFindings = input.session_id ? asyncManager.drainFindings(input.session_id) : [];
-  if (asyncFindings.length) {
-    lines.push(...formatAsyncFindings(asyncFindings));
+  const asyncLines = input.session_id ? asyncEngine.drain(input.session_id) : [];
+  if (asyncLines.length) {
+    lines.push(...asyncLines);
   }
 
   // Append skill-health nudge if skills are flagged
@@ -700,13 +670,13 @@ function handleEnforceTool(input, ctx) {
   });
 
   // Dispatch async jobs for async rules with tool triggers
-  dispatchAsyncJobs(ctx, input, (entry) => {
+  asyncEngine.dispatch(ctx, input, (entry) => {
     if (!entry.toolTriggerNamesSet && (!entry.inputRe || !entry.inputRe.length)) return false;
     if (entry.toolTriggerNamesSet && toolName && !entry.toolTriggerNamesSet.has(toolName)) return false;
     if (entry.toolTriggerNamesSet && !toolName) return false;
     if (entry.inputRe && entry.inputRe.length && !entry.inputRe.some(re => re.test(inputStr))) return false;
     return true;
-  }, () => ({ toolName, toolInput: input.tool_input }));
+  }, () => ({ toolName, toolInput: input.tool_input }), { getSession, checkSkip, ruleMatchesProject });
 
   return buildEnforcementResponse(matches);
 }
@@ -722,13 +692,13 @@ function handlePostTool(input, ctx) {
 
   // Dispatch async jobs for async rules with output triggers
   if (ctx.hasAsyncRules) {
-    dispatchAsyncJobs(ctx, input, (entry) => {
+    asyncEngine.dispatch(ctx, input, (entry) => {
       if (!entry.outputToolNamesSet && (!entry.outputRe || !entry.outputRe.length)) return false;
       if (entry.outputToolNamesSet && toolName && !entry.outputToolNamesSet.has(toolName)) return false;
       if (entry.outputToolNamesSet && !toolName) return false;
       if (entry.outputRe && entry.outputRe.length && !entry.outputRe.some(re => re.test(outputStr))) return false;
       return true;
-    }, () => ({ toolName, toolInput: input.tool_input, toolOutput: outputStr }));
+    }, () => ({ toolName, toolInput: input.tool_input, toolOutput: outputStr }), { getSession, checkSkip, ruleMatchesProject });
   }
 
   const lines = [];
@@ -752,9 +722,9 @@ function handlePostTool(input, ctx) {
   }
 
   // Deliver pending async findings mid-turn
-  const asyncFindings = sid ? asyncManager.drainFindings(sid) : [];
-  if (asyncFindings.length) {
-    lines.push(...formatAsyncFindings(asyncFindings));
+  const asyncLines = sid ? asyncEngine.drain(sid) : [];
+  if (asyncLines.length) {
+    lines.push(...asyncLines);
   }
 
   if (!lines.length) return {};
@@ -828,10 +798,10 @@ function handlePreTool(input) {
   if (ctx && input && input.tool_input && input.tool_input.file_path) {
     const filePath = input.tool_input.file_path;
     const content = input.tool_input.content || input.tool_input.new_string || '';
-    dispatchAsyncJobs(ctx, input, (entry) => {
+    asyncEngine.dispatch(ctx, input, (entry) => {
       if (!entry.pathRe || !entry.pathRe.length) return false;
       return matchFileCompiled(filePath, entry, ctx.projectRoot, ctx.rulesData);
-    }, () => ({ filePath, content, toolName: input.tool_name || '' }));
+    }, () => ({ filePath, content, toolName: input.tool_name || '' }), { getSession, checkSkip, ruleMatchesProject });
   }
 
   let deny = null;
@@ -954,7 +924,7 @@ async function handleRequest(req, res) {
       hasOutputTriggerRules: ctx.hasOutputTriggerRules,
       hasStopRules: ctx.hasStopRules,
       hasAsyncRules: ctx.hasAsyncRules,
-      asyncWorker: asyncManager.getStatus(),
+      async: asyncEngine.getStatus(),
       sessions: sessionsObj,
       sessionContexts: Object.fromEntries(
         [...sessionContexts.entries()].map(([id, set]) => [id, [...set]])
@@ -1329,7 +1299,7 @@ server.listen(PORT, '127.0.0.1', () => {
 // Graceful shutdown
 function shutdown() {
   clearInterval(cleanupInterval);
-  asyncManager.shutdown();
+  asyncEngine.shutdown();
   server.close();
 }
 process.on('SIGTERM', shutdown);
