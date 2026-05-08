@@ -519,6 +519,10 @@ function formatAsyncFindings(findings) {
   lines.push('⚠️ Async Analysis Results (' + findings.length + ' finding' + (findings.length > 1 ? 's' : '') + '):');
   lines.push('');
   for (const f of findings) {
+    if (typeof f === 'string') {
+      lines.push('ℹ️ ' + f);
+      continue;
+    }
     const prefix = f.severity === 'warning' ? '⚠️' : 'ℹ️';
     lines.push(prefix + ' ' + f.message);
     if (f.relatedFiles && f.relatedFiles.length) {
