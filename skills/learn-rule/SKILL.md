@@ -163,6 +163,20 @@ Full JSON:
 }
 ```
 
+**Async rule (off-thread analyzer):**
+
+When the user describes a check that needs to read multiple files, parse complex structures, or run expensive validation, this requires an async analyzer — a project-local JS script that runs in a worker thread.
+
+> This is beyond what learn-rule handles directly. Route the user to `/skill-engine:learn-analyzer` which guides through the full workflow: designing the check, scaffolding the JS analyzer script, and wiring the async rule.
+
+Key signals that a lesson needs an async analyzer:
+- "validate X against Y across files"
+- "check that references in this file exist in that directory"
+- "run schema validation when editing config"
+- "auto-fix task files when they reference wrong config"
+
+---
+
 After presenting, ask: "Want to adjust anything, or should I save this?"
 
 ### Step 4: Save

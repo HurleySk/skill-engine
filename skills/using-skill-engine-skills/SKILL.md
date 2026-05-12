@@ -14,6 +14,7 @@ This skill orients you on the skill-engine ecosystem so you know what tools are 
 | **learn** | `skill-engine:learn` | Capture a lesson as a rule or skill — classifies and routes |
 | **learn-rule** | `skill-engine:learn-rule` | Create or update enforcement rules |
 | **learn-skill** | `skill-engine:learn-skill` | Scaffold a reusable SKILL.md |
+| **learn-analyzer** | `skill-engine:learn-analyzer` | Create async analyzer scripts + wire async rules |
 | **review** | `skill-engine:review` | Holistic audit of Claude config (CLAUDE.md, skills, rules, hooks, MCP) |
 | **skill-improve** | `skill-engine:skill-improve` | Review accumulated feedback and propose targeted skill edits |
 | **debrief** | `skill-engine:debrief` | End-of-session lesson capture + holistic review + skill health |
@@ -35,6 +36,7 @@ Use this to decide which skill to invoke:
 - **Skills or config feel stale** → `/skill-engine:review` (full audit)
 - **Specific skill needs improvement** → `/skill-engine:skill-improve <name>`
 - **Rules seem contradictory** → `/skill-engine:rule-consistency`
+- **Need cross-file validation or expensive checks** → `/skill-engine:learn-analyzer` (async analyzer)
 - **Performance concern** → `/skill-engine:perf-check`
 - **Server not running** → `/skill-engine:start`
 

@@ -57,6 +57,7 @@ Based on what the user described, determine the best artifact type:
 | "after editing X files, remind me to Y" | Post-tool guidance rule | `/skill-engine:learn-rule` |
 | "at the end of every turn, remind me to X" | Stop guidance rule | `/skill-engine:learn-rule` |
 | "when doing X, follow these steps", multi-step process | Reusable skill | `/skill-engine:learn-skill` |
+| "validate X across files", "check references", "custom script on edit" | Async analyzer | `/skill-engine:learn-analyzer` |
 | "update/change that rule to also cover..." | Rule update | `/skill-engine:learn-rule update` |
 | "make that learned rule permanent" | Rule promotion | `/skill-engine:learn-rule promote` |
 

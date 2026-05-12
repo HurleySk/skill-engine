@@ -22,8 +22,9 @@ Server tests spawn real processes on ports 19751-19785. Ensure those ports are f
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
 - `hooks/lib/learn.js` — rule/skill classification
 - `hooks/lib/skill-scaffold.js` — creates SKILL.md files
+- `hooks/lib/analyzer-scaffold.js` — creates analyzer JS files in `.claude/skills/analyzers/`
 - `.claude-plugin/plugin.json` — plugin metadata, version, hook definitions
-- `skills/` — SKILL.md files for each slash command (includes `skill-improve`, `debrief`, `using-skill-engine-skills`)
+- `skills/` — SKILL.md files for each slash command (includes `skill-improve`, `debrief`, `learn-analyzer`, `using-skill-engine-skills`)
 
 ## Setup
 
