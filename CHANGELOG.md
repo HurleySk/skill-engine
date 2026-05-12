@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.1.0
+
+### Features
+
+- Add `learn-analyzer` skill for creating async analyzer scripts with guided workflow
+- Add `hooks/lib/analyzer-scaffold.js` backing code (create, list, validate analyzers)
+- Add async analyzer routing in `learn` triage table and `learn-rule` cross-reference
+
+### Docs
+
+- Rewrite README.md for v5.x (was frozen at v3.2.0): async analyzers, handler registry, skill feedback, all 14 skills, full endpoint table, version history through v5.0.3
+- Update CLAUDE.md with learn-analyzer and analyzer-scaffold references
+- Update `using-skill-engine-skills` inventory and decision tree
+
 ## 5.0.0
 
 ### Breaking (internal)
