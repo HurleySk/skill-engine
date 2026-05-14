@@ -51,7 +51,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|Bash|PowerShell|NotebookEdit|Read|Grep",
+        "matcher": "Write|Edit|Bash|PowerShell|NotebookEdit",
         "hooks": [
           {
             "type": "http",
