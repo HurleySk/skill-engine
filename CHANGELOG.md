@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.1.6
+
+### Fixes
+
+- Fix cross-session rule leaking in `getRequestContext()` -- when a session_id is provided but not found in the registry, no longer falls back to the last registered session's project. This caused rules from other projects (e.g., `w3-debrief-nudge` from boomerang-) to fire in unrelated sessions.
+
 ## 5.1.5
 
 ### Fixes

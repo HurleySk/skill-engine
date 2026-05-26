@@ -270,10 +270,17 @@ function getRequestContext(input) {
     const entry = sessionRegistry.get(input.session_id);
     entry.lastRequest = Date.now();
     projectDir = entry.projectDir;
-  } else if (lastRegisteredSessionId && sessionRegistry.has(lastRegisteredSessionId)) {
-    const entry = sessionRegistry.get(lastRegisteredSessionId);
-    entry.lastRequest = Date.now();
-    projectDir = entry.projectDir;
+  } else if (!input || !input.session_id) {
+    // Only fall back to last registered session when no session_id was provided.
+    // When a session_id IS provided but not found, falling back to another session
+    // would load the wrong project's rules and context.
+    if (lastRegisteredSessionId && sessionRegistry.has(lastRegisteredSessionId)) {
+      const entry = sessionRegistry.get(lastRegisteredSessionId);
+      entry.lastRequest = Date.now();
+      projectDir = entry.projectDir;
+    } else if (process.env.CLAUDE_PROJECT_DIR) {
+      projectDir = process.env.CLAUDE_PROJECT_DIR;
+    }
   } else if (process.env.CLAUDE_PROJECT_DIR) {
     projectDir = process.env.CLAUDE_PROJECT_DIR;
   }
