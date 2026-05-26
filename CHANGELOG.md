@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.1.4
+
+### Fixes
+
+- Implement `skipConditions.requiresContext` in `checkSkip()` — rules with `requiresContext` now correctly check session context tags before firing, preventing false positives (e.g., `w3-debrief-nudge` no longer fires when no W3 skills were active)
+- Attach `sessionContexts` to session object in `getSession()` so context tags are available during skip checks
+
 ## 5.1.0
 
 ### Features
