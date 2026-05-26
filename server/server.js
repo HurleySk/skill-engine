@@ -435,6 +435,7 @@ function getSession(sessionId, projectRoot) {
     sessions.set(key, s);
   }
   s.lastSeen = Date.now();
+  s.contexts = sessionContexts.get(sessionId) || null;
   return s;
 }
 
@@ -469,6 +470,10 @@ function checkSkip(ruleName, rule, session) {
   }
   if (skip.sessionOnce && session) {
     if (session.firedRules.has(ruleName)) return true;
+  }
+  if (skip.requiresContext && skip.requiresContext.length) {
+    const ctxSet = session && session.contexts;
+    if (!ctxSet || !skip.requiresContext.some(tag => ctxSet.has(tag))) return true;
   }
   return false;
 }
