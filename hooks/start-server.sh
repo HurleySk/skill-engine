@@ -64,25 +64,6 @@ register_session() {
 PLUGIN_DIR="$(_resolve_latest_plugin_dir)"
 CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(require('path').resolve(process.argv[1]),'utf8')).version||'')}catch{console.log('')}" "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
 
-# --- Cache cleanup: remove old version directories ---
-_prune_old_cache_versions() {
-  local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
-  local CURRENT_DIR
-  CURRENT_DIR="$(cd "$PLUGIN_DIR" 2>/dev/null && pwd)" || return 0
-  [ -z "$CURRENT_DIR" ] && return 0
-  [ ! -d "$CACHE_BASE" ] && return 0
-
-  local COUNT=0
-  for DIR in "$CACHE_BASE"/*/; do
-    local RESOLVED
-    RESOLVED="$(cd "$DIR" 2>/dev/null && pwd)" || continue
-    [ "$RESOLVED" = "$CURRENT_DIR" ] && continue
-    rm -rf "$DIR" 2>/dev/null && COUNT=$((COUNT + 1))
-  done
-
-  [ "$COUNT" -gt 0 ] && echo "skill-engine: pruned $COUNT old cache version(s)"
-}
-
 # Check if server is already running
 HEALTH=$(curl -s --max-time 1 "http://localhost:$PORT/health" 2>/dev/null)
 if [ -n "$HEALTH" ]; then
@@ -90,7 +71,6 @@ if [ -n "$HEALTH" ]; then
 
   if [ "$RUNNING_VERSION" = "$CURRENT_VERSION" ]; then
     register_session
-    _prune_old_cache_versions
     exit 0
   fi
 
@@ -119,7 +99,6 @@ for i in 1 2 3; do
   sleep 1
   if curl -s --max-time 1 "http://localhost:$PORT/health" > /dev/null 2>&1; then
     register_session
-    _prune_old_cache_versions
     exit 0
   fi
 done
