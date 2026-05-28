@@ -270,10 +270,10 @@ function getRequestContext(input) {
     const entry = sessionRegistry.get(input.session_id);
     entry.lastRequest = Date.now();
     projectDir = entry.projectDir;
-  } else if (!input || !input.session_id) {
-    // Only fall back to last registered session when no session_id was provided.
-    // When a session_id IS provided but not found, falling back to another session
-    // would load the wrong project's rules and context.
+  } else {
+    // session_id was either absent or present-but-unrecognized.
+    // Fall back to the last registered session (common single-user case)
+    // or the process env var.
     if (lastRegisteredSessionId && sessionRegistry.has(lastRegisteredSessionId)) {
       const entry = sessionRegistry.get(lastRegisteredSessionId);
       entry.lastRequest = Date.now();
@@ -281,8 +281,6 @@ function getRequestContext(input) {
     } else if (process.env.CLAUDE_PROJECT_DIR) {
       projectDir = process.env.CLAUDE_PROJECT_DIR;
     }
-  } else if (process.env.CLAUDE_PROJECT_DIR) {
-    projectDir = process.env.CLAUDE_PROJECT_DIR;
   }
 
   if (!projectDir) {
@@ -615,6 +613,7 @@ function handleActivate(input) {
   const prompt = input && input.prompt;
   if (!prompt) return {};
   const ctx = getRequestContext(input);
+  _lastHandlerCtx = ctx;
   const session = getSession(input.session_id, ctx.projectRoot);
 
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry) => {
@@ -704,7 +703,7 @@ function handleActivate(input) {
 // --- Enforce-tool handler (PreToolUse for any tool) ---
 function handleEnforceTool(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  ctx = ctx || getRequestContext(input);
+  if (!ctx) { ctx = getRequestContext(input); _lastHandlerCtx = ctx; }
   if (!ctx.hasToolTriggerRules) return {};
   const toolName = input && input.tool_name;
   const toolInput = input && input.tool_input;
@@ -747,7 +746,7 @@ function handleEnforceTool(input, ctx) {
 // --- Post-tool handler (PostToolUse) ---
 function handlePostTool(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  ctx = ctx || getRequestContext(input);
+  if (!ctx) { ctx = getRequestContext(input); _lastHandlerCtx = ctx; }
   const toolName = input && input.tool_name;
   const toolOutput = input && input.tool_output;
   const outputStr = typeof toolOutput === 'string' ? toolOutput : (toolOutput ? JSON.stringify(toolOutput) : '');
@@ -804,6 +803,7 @@ function handlePostTool(input, ctx) {
 function handleStop(input) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
   const ctx = getRequestContext(input);
+  _lastHandlerCtx = ctx;
   if (!ctx.hasStopRules) return {};
   const session = getSession(input && input.session_id, ctx.projectRoot);
 
@@ -826,7 +826,7 @@ function handleEnforce(input, ctx) {
   if (!filePath) return {};
   const toolName = input && input.tool_name;
   const writeContent = input && input.tool_input && (input.tool_input.content || input.tool_input.new_string || '');
-  ctx = ctx || getRequestContext(input);
+  if (!ctx) { ctx = getRequestContext(input); _lastHandlerCtx = ctx; }
   const session = getSession(input.session_id, ctx.projectRoot);
 
   const matches = collectMatches(ctx.compiledRules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {
@@ -844,7 +844,7 @@ function handleEnforce(input, ctx) {
 
 function handlePreWrite(input, ctx) {
   if (paused || process.env.SKILL_ENGINE_OFF === '1') return {};
-  ctx = ctx || getRequestContext(input);
+  if (!ctx) { ctx = getRequestContext(input); _lastHandlerCtx = ctx; }
   return preWriteHandler(input, ctx.projectRoot);
 }
 
@@ -852,10 +852,12 @@ function handlePreWrite(input, ctx) {
 let eventsProcessed = 0;
 let lastEvent = null;
 let paused = false;
+let _lastHandlerCtx = null; // stashed by route handlers for audit log
 
 // --- Consolidated PreToolUse handler ---
 function handlePreTool(input) {
   const ctx = (paused || process.env.SKILL_ENGINE_OFF === '1') ? null : getRequestContext(input);
+  _lastHandlerCtx = ctx;
 
   const results = [
     handleEnforce(input, ctx),
@@ -1284,8 +1286,10 @@ async function handleRequest(req, res) {
       const decision = (hso && hso.permissionDecision) || 'allow';
       const toolName = (body && body.tool_name) || null;
       const filePath = (body && body.tool_input && body.tool_input.file_path) || null;
-      // Count rules checked/matched from context
-      const ctx = (!paused && process.env.SKILL_ENGINE_OFF !== '1') ? getRequestContext(body) : null;
+      // Reuse context from handler (stashed in _lastHandlerCtx) to avoid
+      // a redundant getRequestContext call that could resolve differently.
+      const ctx = _lastHandlerCtx;
+      _lastHandlerCtx = null;
       const rulesChecked = ctx ? ctx.compiledRules.length : 0;
       // Extract matched rule names from the reason string
       const rulesMatched = [];
