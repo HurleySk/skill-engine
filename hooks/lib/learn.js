@@ -180,26 +180,40 @@ if (require.main === module) {
     return new Promise((resolve) => {
       if (process.stdin.isTTY) return resolve(null);
       let data = '';
+      let resolved = false;
       process.stdin.setEncoding('utf8');
       process.stdin.on('data', (chunk) => { data += chunk; });
-      process.stdin.on('end', () => resolve(data.trim() || null));
+      process.stdin.on('end', () => {
+        if (!resolved) { resolved = true; resolve(data.trim() || null); }
+      });
+      // When spawned as a child process without piped stdin (e.g. by
+      // Claude Code hooks), isTTY is undefined and the parent never
+      // closes the write end of the pipe, so 'end' never fires.
+      // Time out after 50ms so we don't hang forever.
+      setTimeout(() => {
+        if (!resolved) { resolved = true; resolve(data.trim() || null); }
+      }, 50);
     });
   }
 
-  function parseJsonArg(arg, stdin) {
-    if (arg) {
-      try { return JSON.parse(arg); } catch {}
-    }
-    if (stdin) {
-      try { return JSON.parse(stdin); } catch {}
-    }
-    return null;
+  function tryParseJson(str) {
+    if (!str) return null;
+    try { return JSON.parse(str); } catch { return null; }
+  }
+
+  // Only read stdin when the command needs JSON and it wasn't provided
+  // as a CLI argument.  This avoids the hang entirely in the common case
+  // where JSON is passed as argv[2].
+  async function resolveJson(cliArg) {
+    const fromArg = tryParseJson(cliArg);
+    if (fromArg) return fromArg;
+    const stdin = await readStdin();
+    return tryParseJson(stdin);
   }
 
   async function main() {
     const args = process.argv.slice(2);
     const command = args[0];
-    const stdin = await readStdin();
 
     // Parse --file flag
     const fileIdx = args.indexOf('--file');
@@ -219,7 +233,7 @@ if (require.main === module) {
 
     if (command === 'add') {
       const ruleName = args[1];
-      const ruleJson = parseJsonArg(args[2], stdin);
+      const ruleJson = await resolveJson(args[2]);
       if (!ruleJson) {
         process.stderr.write('Error: Invalid JSON for rule. Pass as argument or pipe via stdin.\n');
         process.exit(1);
@@ -245,7 +259,7 @@ if (require.main === module) {
       }
     } else if (command === 'update') {
       const ruleName = args[1];
-      const updatesJson = parseJsonArg(args[2], stdin);
+      const updatesJson = await resolveJson(args[2]);
       if (!updatesJson) {
         process.stderr.write('Error: Invalid JSON for updates. Pass as argument or pipe via stdin.\n');
         process.exit(1);
