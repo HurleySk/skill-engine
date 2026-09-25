@@ -32,7 +32,7 @@ function normalizeTriggerPaths(rule) {
 // Reuse engine's loadRules — same schema for both files
 const loadLearnedFile = loadRules;
 
-function add(ruleName, rule, filePath) {
+function add(ruleName, rule, filePath, sourceRepo = process.env.CLAUDE_PROJECT_DIR) {
   if (!ruleName || typeof ruleName !== 'string' || !ruleName.trim()) {
     return { ok: false, error: 'Rule name must be a non-empty string.' };
   }
@@ -40,10 +40,7 @@ function add(ruleName, rule, filePath) {
   if (!validation.ok) return validation;
 
   const normalized = normalizeTriggerPaths(rule);
-  if (!normalized.sourceRepo) {
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || null;
-    if (projectDir) normalized.sourceRepo = normalizePath(projectDir);
-  }
+  if (!normalized.sourceRepo && sourceRepo) normalized.sourceRepo = normalizePath(sourceRepo);
   const data = loadLearnedFile(filePath) || { version: '1.0', rules: {} };
 
   if (data.rules[ruleName]) {

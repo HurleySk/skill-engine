@@ -9,17 +9,6 @@ fi
 
 PORT="${SKILL_ENGINE_PORT:-19750}"
 
-_resolve_latest_plugin_dir() {
-  local CACHE_BASE="$HOME/.claude/plugins/cache/hurleysk-marketplace/skill-engine"
-  local LATEST
-  LATEST=$(ls -d "$CACHE_BASE"/*/ 2>/dev/null | sort -V | tail -1)
-  if [ -n "$LATEST" ]; then
-    echo "${LATEST%/}"
-  else
-    echo "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  fi
-}
-
 _kill_pid() {
   if command -v powershell.exe >/dev/null 2>&1; then
     powershell.exe -NoProfile -Command "Stop-Process -Id $1 -Force -ErrorAction SilentlyContinue" 2>/dev/null
@@ -37,37 +26,22 @@ _kill_by_port() {
 }
 
 register_session() {
-  # On Windows/Git Bash, convert /c/Users/... to C:/Users/... so Node.js fs resolves correctly
   local PROJECT_DIR="$CLAUDE_PROJECT_DIR"
   if [[ "$PROJECT_DIR" =~ ^/[a-zA-Z]/ ]]; then
     PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -W)" || PROJECT_DIR="$CLAUDE_PROJECT_DIR"
   fi
-  local SESSION_ID="${CLAUDE_SESSION_ID:-$(node -e "console.log(require('crypto').createHash('md5').update(process.argv[1]).digest('hex').slice(0,16))" "$PROJECT_DIR" 2>/dev/null)}"
   local PAYLOAD
-  PAYLOAD=$(node -e "console.log(JSON.stringify({sessionId:process.argv[1],projectDir:process.argv[2]}))" \
-    "$SESSION_ID" "$PROJECT_DIR" 2>/dev/null)
-  local RESULT
-  RESULT=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 -X POST -H "Content-Type: application/json" \
-    -d "$PAYLOAD" \
-    "http://localhost:$PORT/register-session" 2>/dev/null)
-  if [ "$RESULT" = "200" ]; then
-    return
-  fi
-  # Fallback to /set-project for older servers without /register-session
-  local SET_PAYLOAD
-  SET_PAYLOAD=$(node -e "console.log(JSON.stringify({projectDir:process.argv[1]}))" "$PROJECT_DIR" 2>/dev/null)
-  curl -s --max-time 1 -X POST -H "Content-Type: application/json" \
-    -d "$SET_PAYLOAD" \
-    "http://localhost:$PORT/set-project" > /dev/null 2>&1
+  PAYLOAD=$(node -e "const [sid,dir]=process.argv.slice(1);console.log(JSON.stringify({sessionId:sid||require('crypto').createHash('md5').update(dir).digest('hex').slice(0,16),projectDir:dir}))"     "$CLAUDE_SESSION_ID" "$PROJECT_DIR" 2>/dev/null)
+  curl -s -o /dev/null --max-time 1 -X POST -H "Content-Type: application/json"     -d "$PAYLOAD" "http://localhost:$PORT/register-session" 2>/dev/null
 }
 
-PLUGIN_DIR="$(_resolve_latest_plugin_dir)"
-CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(require('path').resolve(process.argv[1]),'utf8')).version||'')}catch{console.log('')}" "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
+PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CURRENT_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).version||'')}catch{console.log('')}" "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null)
 
 # Check if server is already running
 HEALTH=$(curl -s --max-time 1 "http://localhost:$PORT/health" 2>/dev/null)
 if [ -n "$HEALTH" ]; then
-  RUNNING_VERSION=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version||'')}catch{console.log('')}})" 2>/dev/null)
+  read -r RUNNING_VERSION OLD_PID < <(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const h=JSON.parse(d);console.log((h.version||'-')+' '+(h.pid||''))}catch{console.log('-')}})" 2>/dev/null)
 
   if [ "$RUNNING_VERSION" = "$CURRENT_VERSION" ]; then
     register_session
@@ -75,7 +49,6 @@ if [ -n "$HEALTH" ]; then
   fi
 
   # Version differs — kill and restart
-  OLD_PID=$(echo "$HEALTH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).pid||'')}catch{console.log('')}})" 2>/dev/null)
   if [ -n "$OLD_PID" ]; then
     _kill_pid "$OLD_PID"
   else

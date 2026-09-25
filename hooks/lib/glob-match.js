@@ -42,6 +42,15 @@ function globToRegex(glob, opts) {
   return new RegExp('^' + result + '$', caseInsensitive ? 'i' : '');
 }
 
+function relativePath(filePath, root) {
+  const normalized = normalizePath(filePath);
+  if (!root) return normalized;
+  const ci = process.platform === 'win32';
+  const r = ci ? root.toLowerCase() : root;
+  const n = ci ? normalized.toLowerCase() : normalized;
+  return n.startsWith(r + '/') ? normalized.slice(root.length + 1) : normalized;
+}
+
 function matchPath(filePath, pathPatterns, pathExclusions, opts) {
   const normalized = normalizePath(filePath);
   if (pathExclusions && pathExclusions.length) {
@@ -57,4 +66,4 @@ function globMatch(pattern, filePath) {
   return globToRegex(p, { caseInsensitive: true }).test(f);
 }
 
-module.exports = { normalizePath, globToRegex, matchPath, globMatch };
+module.exports = { normalizePath, relativePath, globToRegex, matchPath, globMatch };

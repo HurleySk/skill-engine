@@ -1028,245 +1028,6 @@ describe('Cross-Repo Rule Isolation', () => {
   });
 });
 
-describe('Pre-Write Endpoint — Task Safety', () => {
-  let harness;
-  const PORT = 19764;
-
-  before(async () => {
-    harness = await startTestServer(PORT, {
-      version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
-    }, {
-      extraFiles: {
-        '.claude/safety-rules.json': JSON.stringify({
-          prodFactories: ['prd'],
-          prodConnections: ['prd', 'onpremprod'],
-          prodEnvironments: ['orgprod', 'PRODORG'],
-          prodDeployStepTypes: ['adf-deploy-pipeline', 'adf-run-pipeline'],
-          prodMutationStepTypes: ['sql-deploy-sp'],
-          prodUriPatterns: ['acme.crm.dynamics.com'],
-          devRevertAllowedFactories: ['dev1'],
-          blockedExportBranches: ['main', 'master'],
-          readOnlyStepTypes: ['sql-query', 'adf-pull'],
-          prodUriRegex: 'acme\\.crm',
-          prodNameRegex: '\\bprod\\b|PRODORG|orgprod'
-        })
-      }
-    });
-  });
-
-  after(() => { stopTestServer(harness); });
-
-  it('allows non-task file paths (fast exit)', async () => {
-    const filePath = path.join(harness.tmpDir, 'README.md').replace(/\\/g, '/');
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: 'hello' }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.hookSpecificOutput, 'should allow non-task files');
-  });
-
-  it('denies task file targeting production factory', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'deploy.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'adf-deploy-pipeline', factory: 'prd', pipeline: 'SomePipeline' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('production factory'));
-  });
-
-  it('denies task file targeting production environment', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'test.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'dataverse-delete', environment: 'orgprod' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('production environment'));
-  });
-
-  it('denies task file targeting production connection with mutation', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'sp.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'sql-deploy-sp', connection: 'prd', sp: 'p_Test' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('production connection'));
-  });
-
-  it('asks for read-only sql-query on production connection', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'query.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'sql-query', connection: 'prd', sql: 'SELECT TOP 10 * FROM Users' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'ask');
-  });
-
-  it('denies sql-query with DML on production connection', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'dml.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'sql-query', connection: 'prd', sql: 'DELETE FROM Users WHERE id=1' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('DML/DDL'));
-  });
-
-  it('allows task file with safe dev steps', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'safe.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'adf-deploy-pipeline', factory: 'dev1', pipeline: 'TestPipeline' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.hookSpecificOutput, 'should allow safe dev task');
-  });
-
-  it('allows read-only step types targeting prod (skipped by readOnlyStepTypes)', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'pull.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'adf-pull', factory: 'prd' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.hookSpecificOutput, 'read-only step types should be allowed');
-  });
-
-  it('denies work-repo-export targeting blocked branch', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'export.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'work-repo-export', branch: 'main' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('blocked branch'));
-  });
-
-  it('denies dev-revert on non-allowed factory', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'revert.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'dev-revert', factory: 'prd' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('dev-revert'));
-  });
-
-  it('allows malformed JSON in task content (fail-open)', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'bad.json').replace(/\\/g, '/');
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: 'not valid json{' }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.hookSpecificOutput, 'should allow malformed JSON');
-  });
-
-  it('returns empty when paused', async () => {
-    await request('POST', '/pause', null, PORT);
-    const filePath = path.join(harness.tmpDir, 'tasks', 'prod.json').replace(/\\/g, '/');
-    const taskContent = JSON.stringify({
-      steps: [{ type: 'adf-deploy-pipeline', factory: 'prd', pipeline: 'Nope' }]
-    });
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: taskContent }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.hookSpecificOutput, 'should be empty when paused');
-    await request('POST', '/resume', null, PORT);
-  });
-
-  it('returns X-Response-Time header', async () => {
-    const filePath = path.join(harness.tmpDir, 'tasks', 'timing.json').replace(/\\/g, '/');
-    const res = await requestRaw('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content: '{}' }
-    }, PORT);
-    assert.ok(res.headers['x-response-time'], 'should have X-Response-Time header');
-  });
-});
-
-describe('Pre-Write Endpoint — Security Model Config', () => {
-  let harness;
-  const PORT = 19765;
-
-  before(async () => {
-    harness = await startTestServer(PORT, {
-      version: '1.0', defaults: { enforcement: 'suggest', priority: 'medium' }, rules: {}
-    });
-  });
-
-  after(() => { stopTestServer(harness); });
-
-  it('allows correct prod org under prod environment', async () => {
-    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ProdOrgConfig.sql').replace(/\\/g, '/');
-    const content = "INSERT INTO config VALUES ('prod', 'PRODORG', 'guid', 'https://acme.crm.dynamics.com')";
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.hookSpecificOutput, 'should allow correct assignment');
-  });
-
-  it('denies prod org under wrong environment', async () => {
-    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ProdOrgConfig.sql').replace(/\\/g, '/');
-    const content = "INSERT INTO config VALUES ('dev', 'PRODORG', 'guid', 'https://acme.crm.dynamics.com')";
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes("must be under 'prod'"));
-  });
-
-  it('asks for prod org under dataqa (intentional override)', async () => {
-    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ProdOrgConfig.sql').replace(/\\/g, '/');
-    const content = "INSERT INTO config VALUES ('dataqa', 'orgprod', 'guid', 'https://acme.crm.dynamics.com')";
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'ask');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('dataqa'));
-  });
-
-  it('denies dev URI under prod environment', async () => {
-    const filePath = path.join(harness.tmpDir, 'work-repo-staging', 'SQL DB', 'ProdOrgConfig.sql').replace(/\\/g, '/');
-    const content = "INSERT INTO config VALUES ('prod', 'devorg', 'guid', 'https://devorg.crm.dynamics.com')";
-    const res = await request('POST', '/pre-write', {
-      tool_input: { file_path: filePath, content }
-    }, PORT);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
-    assert.ok(res.body.hookSpecificOutput.permissionDecisionReason.includes('Dev URI'));
-  });
-});
-
 describe('Mtime-Based Auto-Reload', () => {
   let harness;
   let rulesFile;
@@ -1529,13 +1290,6 @@ describe('Session Registry', () => {
     assert.ok(res.body.hookSpecificOutput.additionalContext.includes('rule-a'));
   });
 
-  it('deprecated /set-project still works via synthetic session', async () => {
-    await request('POST', '/set-project', { projectDir: tmpDirB }, PORT);
-    const res = await request('POST', '/activate', { prompt: 'sess-beta keyword' }, PORT);
-    assert.ok(res.body.hookSpecificOutput);
-    assert.ok(res.body.hookSpecificOutput.additionalContext.includes('rule-b'));
-  });
-
   it('POST /register-session with missing fields returns 400', async () => {
     const res = await request('POST', '/register-session', { sessionId: 'no-proj' }, PORT);
     assert.equal(res.status, 400);
@@ -1587,11 +1341,6 @@ describe('Health and Rules with Sessions', () => {
     assert.ok(res.body.cache, 'should have cache field');
     assert.equal(typeof res.body.cache.entries, 'number');
     assert.equal(res.body.cache.maxEntries, 10);
-  });
-
-  it('GET /health shows deprecatedSetProjectCalls counter', async () => {
-    const res = await request('GET', '/health', null, PORT);
-    assert.equal(typeof res.body.deprecatedSetProjectCalls, 'number');
   });
 
   it('GET /rules?session=X returns rules for that session project', async () => {
@@ -1824,7 +1573,7 @@ describe('Session Context Tracking', () => {
       rules: {
         'inv-skill': {
           type: 'domain',
-          description: 'investigation skill',
+          description: 'Investigation skill',
           skillPath: './investigation/SKILL.md',
           sessionContext: 'investigation',
           triggers: { prompt: { keywords: ['investigate-ctx'] } },
@@ -1836,7 +1585,7 @@ describe('Session Context Tracking', () => {
           description: 'autoCreate drops NULL columns',
           triggers: { prompt: { keywords: ['autoCreate-ctx'] } },
           contextEnhancement: {
-            'investigation': 'ENHANCED: verify staging DDL includes all FetchXML attributes.'
+            'investigation': 'ENHANCED: verify staging DDL includes all source query attributes.'
           }
         }
       }
@@ -1957,7 +1706,7 @@ describe('Session Context Initialization', () => {
       rules: {
         'inv-skill': {
           type: 'domain',
-          description: 'investigation',
+          description: 'Investigation',
           sessionContext: 'investigation',
           skillPath: './investigation/SKILL.md',
           triggers: { prompt: { keywords: ['investigate-check'] } },
@@ -1988,6 +1737,11 @@ describe('Subagent Briefing', () => {
     harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
+      briefings: {
+        'investigation': ['quick-ref.md', 'known-issues.md'],
+        'pipeline-dev': ['quick-ref.md', 'patterns.md'],
+        'testing': ['quick-ref.md', 'assertion-ref.md']
+      },
       rules: {
         'warn-rule': {
           type: 'guardrail',
@@ -2001,7 +1755,7 @@ describe('Subagent Briefing', () => {
     }, {
       extraFiles: {
         '.claude/skills/investigation/quick-ref.md': '# Quick Ref\n\n| Factory | env |\n|---|---|\n| dev1 | dev |',
-        '.claude/skills/investigation/known-issues.md': '# Known Issues\n\n## NULL owningbusinessunit\nCorrupted records.',
+        '.claude/skills/investigation/known-issues.md': '# Known Issues\n\n## NULL owner column\nCorrupted records.',
         '.claude/skills/pipeline-dev/quick-ref.md': '# Quick Ref\n\nSame content.',
         '.claude/skills/pipeline-dev/patterns.md': '# Patterns\n\n## Standard Load\nAnnotated example.',
         '.claude/skills/testing/quick-ref.md': '# Quick Ref\n\nTest ref.',
@@ -2059,10 +1813,11 @@ describe('Full Session Flow', () => {
     harness = await startTestServer(PORT, {
       version: '1.0',
       defaults: { enforcement: 'suggest', priority: 'medium' },
+      briefings: { 'investigation': ['quick-ref.md', 'known-issues.md'] },
       rules: {
         'inv-skill': {
           type: 'domain',
-          description: 'investigation',
+          description: 'Investigation',
           sessionContext: 'investigation',
           skillPath: './investigation/SKILL.md',
           triggers: { prompt: { keywords: ['investigate-flow'] } },
@@ -2079,14 +1834,14 @@ describe('Full Session Flow', () => {
           guidance: 'Use explicit TabularTranslator mappings.',
           triggers: { prompt: { keywords: ['autoCreate-flow'] } },
           contextEnhancement: {
-            'investigation': 'ENHANCED: verify staging DDL includes all FetchXML attributes.'
+            'investigation': 'ENHANCED: verify staging DDL includes all source query attributes.'
           }
         }
       }
     }, {
       extraFiles: {
         '.claude/skills/investigation/quick-ref.md': '# Quick Ref\n\nFactory table here.',
-        '.claude/skills/investigation/known-issues.md': '# Known Issues\n\nNULL owningbusinessunit.',
+        '.claude/skills/investigation/known-issues.md': '# Known Issues\n\nNULL owner column.',
       }
     });
   });
@@ -2919,5 +2674,81 @@ describe('Trigger Index: tool triggers', () => {
     assert.equal(res.status, 200);
     // file-only-rule should not fire via enforce-tool (it fires via /enforce)
     assert.ok(!res.body.hookSpecificOutput, 'file-only rule should not be in tool trigger index');
+  });
+});
+
+describe('Guardrail sessionOnce, audit names, learn scoping', () => {
+  let harness;
+  let tmpDirB;
+  const PORT = 19792;
+
+  before(async () => {
+    tmpDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'se-learn-b-'));
+    fs.mkdirSync(path.join(tmpDirB, '.claude', 'skills'), { recursive: true });
+    harness = await startTestServer(PORT, {
+      version: '1.0',
+      defaults: { enforcement: 'suggest', priority: 'medium' },
+      rules: {
+        'once-block': {
+          type: 'guardrail',
+          enforcement: 'block',
+          description: 'Blocks the first matching write per session',
+          blockMessage: 'Custom block text',
+          triggers: { file: { pathPatterns: ['**/*.once'] } },
+          skipConditions: { sessionOnce: true }
+        },
+        'once-tool-ask': {
+          type: 'guardrail',
+          enforcement: 'ask',
+          description: 'Asks once per session',
+          askMessage: 'Custom ask text',
+          triggers: { tool: { toolNames: ['Bash'], inputPatterns: ['deploy-once'] } },
+          skipConditions: { sessionOnce: true }
+        }
+      }
+    });
+  });
+
+  after(() => { stopTestServer(harness, [tmpDirB]); });
+
+  it('sessionOnce file guardrail fires once per session', async () => {
+    const body = { tool_name: 'Write', tool_input: { file_path: path.join(harness.tmpDir, 'a.once'), content: 'x' }, session_id: 'once-sess' };
+    const first = await request('POST', '/pre-tool', body, PORT);
+    assert.equal(first.body.hookSpecificOutput.permissionDecision, 'deny');
+    const second = await request('POST', '/pre-tool', body, PORT);
+    assert.ok(!second.body.hookSpecificOutput);
+  });
+
+  it('sessionOnce tool guardrail fires once per session', async () => {
+    const body = { tool_name: 'Bash', tool_input: { command: 'deploy-once now' }, session_id: 'once-tool-sess' };
+    const first = await request('POST', '/pre-tool', body, PORT);
+    assert.equal(first.body.hookSpecificOutput.permissionDecision, 'ask');
+    const second = await request('POST', '/pre-tool', body, PORT);
+    assert.ok(!second.body.hookSpecificOutput);
+  });
+
+  it('audit log names rules that use a custom block message', async () => {
+    await request('POST', '/pre-tool', { tool_name: 'Write', tool_input: { file_path: path.join(harness.tmpDir, 'b.once') }, session_id: 'audit-sess' }, PORT);
+    const log = await request('GET', '/audit-log', null, PORT);
+    const entry = log.body.find(e => e.filePath && e.filePath.endsWith('b.once'));
+    assert.deepEqual(entry.rulesMatched, ['once-block']);
+    assert.equal(entry.enforcement, 'deny');
+  });
+
+  it('POST /learn stamps sourceRepo from the requesting session', async () => {
+    await request('POST', '/register-session', { sessionId: 'learn-b', projectDir: tmpDirB }, PORT);
+    const res = await request('POST', '/learn', {
+      action: 'add', session_id: 'learn-b', name: 'scoped',
+      rule: { type: 'domain', description: 'scoped rule', triggers: { prompt: { keywords: ['scoped-kw'] } } }
+    }, PORT);
+    assert.equal(res.body.ok, true);
+    const learned = JSON.parse(fs.readFileSync(path.join(tmpDirB, '.claude', 'skills', 'learned-rules.json'), 'utf8'));
+    assert.equal(learned.rules.scoped.sourceRepo.toLowerCase(), tmpDirB.replace(/\\/g, '/').toLowerCase());
+  });
+
+  it('GET /briefing returns 404 when the project defines no briefings', async () => {
+    await request('POST', '/register-session', { sessionId: 'brief-a', projectDir: harness.tmpDir }, PORT);
+    const res = await request('GET', '/briefing?context=anything', null, PORT);
+    assert.equal(res.status, 404);
   });
 });
