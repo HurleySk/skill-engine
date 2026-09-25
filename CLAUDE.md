@@ -15,9 +15,14 @@ Server tests spawn real processes on ports 19751-19785. Ensure those ports are f
 ## Architecture
 
 - `hooks/start-server.sh` — server lifecycle (start, version-check, restart). Launched by SessionStart hook.
-- `server/server.js` — HTTP server: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/pre-write`, `/stop`, `/register-session`, `/pause`, `/resume`, `/skill-feedback`, `/skill-health`, `/skill-feedback/clear`, `/skill-feedback/signals` (`/set-project` deprecated)
+- `server/server.js` — HTTP bootstrap and router. Hook routes: `/health`, `/activate`, `/pre-tool`, `/enforce`, `/enforce-tool`, `/post-tool`, `/stop`, `/register-session`, `/pause`, `/resume`, `/skill-feedback`, `/skill-health`, `/skill-feedback/clear`, `/skill-feedback/signals` (`/set-project` deprecated)
 - `server/skill-feedback.js` — feedback signal recording, threshold tracking, health reporting for the skill improvement feedback loop
-- `server/pre-write-safety.js` — production safety validation for task files and security model configs
+- `server/handlers.js` — hook handlers (activate, pre-tool, post-tool, stop); each returns `{ response, ctx, matched }`
+- `server/api.js` — non-hook endpoints keyed `'METHOD /path'`
+- `server/match.js` — trigger predicates, skip checks, match collection
+- `server/compile.js` / `server/rule-cache.js` — rule compilation and the mtime-keyed snapshot cache
+- `server/sessions.js` — one record per session: project registration, fired sessionOnce rules per project, context tags
+- `server/stats.js` — counters, pause flag, audit log
 - `hooks/lib/rules-io.js` — finds and loads `skill-rules.json` and `learned-rules.json`
 - `hooks/lib/glob-match.js` — path pattern matching for file guardrails
 - `hooks/lib/learn.js` — rule/skill classification

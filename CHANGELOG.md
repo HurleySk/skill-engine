@@ -1,16 +1,35 @@
 # Changelog
 
+## 6.0.0
+
+### Breaking
+
+- Remove the built-in pre-write safety checks (`server/pre-write-safety.js`, `/pre-write`) and their hardcoded project defaults. Projects that relied on them should run their own PreToolUse hook.
+- `/briefing` contexts now come from a top-level `briefings` map in `skill-rules.json` (`{ "context": ["file.md", ...] }`) instead of a hardcoded list.
+- Remove the deprecated `/set-project` endpoint and `deprecatedSetProjectCalls` health field.
+
+### Fixes
+
+- `sessionOnce` guardrails on file and tool triggers now fire once per session instead of on every call.
+- Audit log `rulesMatched` now lists matched rules directly, including rules with a custom `blockMessage` or `askMessage`.
+- `POST /learn` stamps `sourceRepo` from the requesting session's project instead of the server's startup directory.
+
+### Refactors
+
+- Split `server.js` into `compile`, `rule-cache`, `sessions`, `match`, `handlers`, `api`, and `stats` modules with a route table.
+- `start-server.sh` resolves the plugin from `CLAUDE_PLUGIN_ROOT` and spawns fewer node processes.
+
 ## 5.1.6
 
 ### Fixes
 
-- Fix cross-session rule leaking in `getRequestContext()` -- when a session_id is provided but not found in the registry, no longer falls back to the last registered session's project. This caused rules from other projects (e.g., `debrief-nudge` from boomerang-) to fire in unrelated sessions.
+- Fix cross-session rule leaking in `getRequestContext()` -- when a session_id is provided but not found in the registry, no longer falls back to the last registered session's project. This caused rules from other projects (e.g., a debrief-nudge rule from another project) to fire in unrelated sessions.
 
 ## 5.1.5
 
 ### Fixes
 
-- Implement `skipConditions.requiresContext` in `checkSkip()` — rules with `requiresContext` now correctly check session context tags before firing, preventing false positives (e.g., `debrief-nudge` no longer fires when no skills were active)
+- Implement `skipConditions.requiresContext` in `checkSkip()` — rules with `requiresContext` now correctly check session context tags before firing, preventing false positives (e.g., a debrief-nudge rule no longer fires when no related skills were active)
 - Attach `sessionContexts` to session object in `getSession()` so context tags are available during skip checks
 
 ## 5.1.0

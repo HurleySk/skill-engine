@@ -7,7 +7,7 @@ Rule-based skill activation and guardrail enforcement for Claude Code. Persisten
 A Node.js HTTP server starts at session begin, loads all rules into memory, and pre-compiles regex patterns. Claude Code hooks route events to the server:
 
 - **UserPromptSubmit** hits `/activate` -- matches prompt text against activation rules, suggests relevant skills, and delivers any pending async analyzer findings.
-- **PreToolUse** hits `/pre-tool` -- consolidated endpoint handling file-path guardrails, tool-input guardrails, and project-specific safety checks in a single round-trip (replaced the previous 3-endpoint split at `/enforce`, `/enforce-tool`, `/pre-write`).
+- **PreToolUse** hits `/pre-tool` -- consolidated endpoint handling file-path and tool-input guardrails in a single round-trip.
 - **PostToolUse** hits `/post-tool` -- evaluates output-trigger rules for mutation tools.
 
 Matchers in `plugin.json` filter hooks at the harness level, so read-only tools (Read, Grep, Glob, LS, Agent, etc.) never trigger HTTP calls. This cuts ~50% of round-trips in a typical session. HTTP hooks cost ~6-21ms per event.
@@ -20,12 +20,11 @@ Async analyzers run off-thread in worker threads and deliver findings on the nex
 |---|---|---|
 | `/health` | GET | Server status, version, rule counts, compilation warnings |
 | `/activate` | POST | Skill activation + async finding delivery (UserPromptSubmit) |
-| `/pre-tool` | POST | Consolidated PreToolUse guardrails (file-path, tool-input, safety) |
+| `/pre-tool` | POST | Consolidated PreToolUse guardrails (file-path, tool-input) |
 | `/enforce` | POST | Legacy file-path guardrails (use `/pre-tool` instead) |
 | `/enforce-tool` | POST | Legacy tool-input guardrails (use `/pre-tool` instead) |
-| `/pre-write` | POST | Legacy project safety checks (use `/pre-tool` instead) |
 | `/post-tool` | POST | Output-trigger rules (PostToolUse) |
-| `/stop` | POST | Shut down server |
+| `/stop` | POST | Stop-event rules |
 | `/register-session` | POST | Register session with project root for cross-repo scoping |
 | `/pause` | POST | Pause enforcement (hooks no-op) |
 | `/resume` | POST | Resume enforcement |
@@ -33,6 +32,10 @@ Async analyzers run off-thread in worker threads and deliver findings on the nex
 | `/skill-health` | GET | Accumulated feedback and threshold state per skill |
 | `/skill-feedback/clear` | POST | Clear feedback for a skill |
 | `/skill-feedback/signals` | GET | Raw signal history |
+| `/briefing?context=X` | GET | Subagent briefing: files listed under `briefings.X` in `skill-rules.json`, read from `.claude/skills/X/`, plus active guardrails |
+| `/test-rule` | POST | Dry-run file guardrails against a simulated path and content |
+| `/learn` | POST | Add, update, remove, promote, or list learned rules |
+| `/audit-log` | GET | Last 100 hook decisions with matched rule names |
 
 ## Skills
 
