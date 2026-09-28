@@ -225,6 +225,35 @@ describe('Enforce Endpoint', () => {
     assert.ok(!hso, 'should not match without SetVariable content');
   });
 
+  it('matches content patterns against the content a Write is about to create', async () => {
+    const newFile = path.join(harness.tmpDir, 'new-proc.sql');
+    const res = await request('POST', '/enforce', {
+      tool_name: 'Write',
+      tool_input: { file_path: newFile, content: 'CREATE PROCEDURE dbo.X AS SELECT 1' },
+    }, PORT);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('matches content patterns against the file an Edit will produce', async () => {
+    const sqlFile = path.join(harness.tmpDir, 'view.sql');
+    fs.writeFileSync(sqlFile, 'CREATE VIEW dbo.V AS SELECT 1');
+    const res = await request('POST', '/enforce', {
+      tool_name: 'Edit',
+      tool_input: { file_path: sqlFile, old_string: 'CREATE VIEW dbo.V', new_string: 'CREATE PROCEDURE dbo.V' },
+    }, PORT);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('does not match content an Edit removes', async () => {
+    const sqlFile = path.join(harness.tmpDir, 'was-proc.sql');
+    fs.writeFileSync(sqlFile, 'CREATE PROCEDURE dbo.P AS SELECT 1');
+    const res = await request('POST', '/enforce', {
+      tool_name: 'Edit',
+      tool_input: { file_path: sqlFile, old_string: 'CREATE PROCEDURE dbo.P', new_string: 'CREATE VIEW dbo.P' },
+    }, PORT);
+    assert.ok(!res.body.hookSpecificOutput);
+  });
+
   it('returns empty for non-matching file', async () => {
     const txtFile = path.join(harness.tmpDir, 'readme.txt');
     fs.writeFileSync(txtFile, 'hello');

@@ -77,7 +77,7 @@ function fileMatches(input, ctx, session) {
     const enforcement = enforcingGuardrail(entry, rd.defaults);
     if (!enforcement) return false;
     if (entry.toolNamesSet && toolName && !entry.toolNamesSet.has(toolName)) return false;
-    return matchFile(filePath, entry, ctx.projectRoot) ? { enforcement } : false;
+    return matchFile(filePath, entry, ctx.projectRoot, input.tool_input) ? { enforcement } : false;
   });
 }
 
@@ -162,7 +162,7 @@ function preTool(input) {
   if (toolInput && toolInput.file_path) {
     const { ctx } = out;
     const filePath = toolInput.file_path;
-    asyncEngine.dispatch(ctx, input, entry => matchFile(filePath, entry, ctx.projectRoot),
+    asyncEngine.dispatch(ctx, input, entry => matchFile(filePath, entry, ctx.projectRoot, toolInput),
       () => ({ filePath, content: toolInput.content || toolInput.new_string || '', toolName: input.tool_name || '' }),
       ASYNC_HELPERS);
   }

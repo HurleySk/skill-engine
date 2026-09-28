@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.0.2
+
+### Fixes
+
+- File-trigger `contentPatterns` and `contentExclusions` match the content the Write or Edit will produce, not the file on disk, so they fire on new files and stop firing on content an edit removes.
+
 ## 6.0.1
 
 ### Fixes

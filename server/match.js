@@ -75,8 +75,24 @@ function readFileOrNull(filePath) {
   try { return fs.readFileSync(filePath, 'utf8'); } catch { return null; }
 }
 
-function matchFile(filePath, entry, projectRoot) {
-  return matchFilePath(filePath, entry, projectRoot) && matchFileContent(entry, () => readFileOrNull(filePath));
+function resultingContent(filePath, toolInput) {
+  const input = toolInput || {};
+  if (typeof input.content === 'string') return input.content;
+  const edits = Array.isArray(input.edits) ? input.edits
+    : (typeof input.new_string === 'string' ? [input] : []);
+  const current = readFileOrNull(filePath);
+  if (current === null) return edits.length ? edits.map(e => e.new_string || '').join('\n') : null;
+  let text = current;
+  for (const e of edits) {
+    if (typeof e.old_string !== 'string' || typeof e.new_string !== 'string') continue;
+    text = e.replace_all ? text.split(e.old_string).join(e.new_string) : text.replace(e.old_string, () => e.new_string);
+  }
+  return text;
+}
+
+function matchFile(filePath, entry, projectRoot, toolInput) {
+  return matchFilePath(filePath, entry, projectRoot) &&
+    matchFileContent(entry, () => resultingContent(filePath, toolInput));
 }
 
 function matchNamedTrigger(names, patterns, toolName, text) {
