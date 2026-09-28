@@ -81,12 +81,19 @@ function fileMatches(input, ctx, session) {
   });
 }
 
+function toolInputText(toolInput) {
+  if (!toolInput) return '';
+  if (typeof toolInput.command === 'string') return toolInput.command;
+  const { description, ...rest } = toolInput;
+  return JSON.stringify(rest);
+}
+
 function toolMatches(input, ctx, session) {
   if (!ctx.hasToolTriggerRules) return [];
   const toolName = input.tool_name;
   const toolInput = input.tool_input;
   if (!toolName && !toolInput) return [];
-  const inputStr = toolInput ? JSON.stringify(toolInput) : '';
+  const inputStr = toolInputText(toolInput);
   const rules = relevantRules(ctx.toolTriggerIndex, ctx.toolWildcardRules, toolName);
 
   const matches = collectMatches(rules, ctx.projectRoot, session, ctx.rulesData, (entry, rd) => {

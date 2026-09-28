@@ -635,6 +635,15 @@ describe('Enforce-Tool Endpoint', () => {
     assert.ok(!res.body.hookSpecificOutput, 'should not match regular push');
   });
 
+  it('ignores the description field of a shell tool input', async () => {
+    const res = await request('POST', '/enforce-tool', {
+      tool_name: 'Bash',
+      tool_input: { command: 'git status', description: 'Check before git push --force' }
+    }, PORT);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hookSpecificOutput, 'description text should not trigger');
+  });
+
   it('warns for warn-enforcement rules', async () => {
     const res = await request('POST', '/enforce-tool', {
       tool_name: 'Bash',

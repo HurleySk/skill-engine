@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.0.1
+
+### Fixes
+
+- Tool-trigger `inputPatterns` match only `command` for shell tools, and never the `description` field, so a description that mentions a blocked word no longer trips a guardrail.
+
 ## 6.0.0
 
 ### Breaking
