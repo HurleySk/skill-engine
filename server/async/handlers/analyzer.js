@@ -1,30 +1,53 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 
 const analyzerCache = new Map();
 
-function loadAnalyzer(projectRoot, analyzerName) {
-  const key = projectRoot + '|' + analyzerName;
-  if (analyzerCache.has(key)) return analyzerCache.get(key);
-
-  if (!analyzerName || /[/\\]|\.\./.test(analyzerName)) {
-    analyzerCache.set(key, null);
-    return null;
-  }
-
-  const analyzerPath = path.join(projectRoot, '.claude', 'skills', 'analyzers', analyzerName + '.js');
+// Latest mtime across the analyzers directory, so an edit to a shared helper
+// such as _lib.js reloads every analyzer that requires it.
+function directoryStamp(dir) {
+  let names;
   try {
-    delete require.cache[require.resolve(analyzerPath)];
-  } catch {}
-  try {
-    const mod = require(analyzerPath);
-    if (typeof mod.analyze !== 'function') return null;
-    analyzerCache.set(key, mod.analyze);
-    return mod.analyze;
+    names = fs.readdirSync(dir);
   } catch {
-    return null;
+    return -1;
   }
+  let stamp = 0;
+  for (const name of names) {
+    if (!name.endsWith('.js')) continue;
+    try {
+      stamp = Math.max(stamp, fs.statSync(path.join(dir, name)).mtimeMs);
+    } catch {}
+  }
+  return stamp;
+}
+
+function purgeRequireCache(dir) {
+  const prefix = path.resolve(dir) + path.sep;
+  for (const id of Object.keys(require.cache)) {
+    if (id.startsWith(prefix)) delete require.cache[id];
+  }
+}
+
+function loadAnalyzer(projectRoot, analyzerName) {
+  if (!analyzerName || /[/\\]|\.\./.test(analyzerName)) return null;
+
+  const dir = path.join(projectRoot, '.claude', 'skills', 'analyzers');
+  const key = projectRoot + '|' + analyzerName;
+  const stamp = directoryStamp(dir);
+  const cached = analyzerCache.get(key);
+  if (cached && cached.stamp === stamp) return cached.analyze;
+
+  purgeRequireCache(dir);
+  let analyze = null;
+  try {
+    const mod = require(path.join(dir, analyzerName + '.js'));
+    if (typeof mod.analyze === 'function') analyze = mod.analyze;
+  } catch {}
+  analyzerCache.set(key, { stamp, analyze });
+  return analyze;
 }
 
 module.exports = {

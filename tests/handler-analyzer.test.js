@@ -54,6 +54,44 @@ describe('Analyzer Handler', () => {
     assert.equal(findings.length, 0);
   });
 
+  it('execute reloads an analyzer after its file changes', async () => {
+    const file = path.join(analyzersDir, 'edited.js');
+    const run = () => analyzerHandler.execute({
+      name: 'edited',
+      config: {},
+      context: { projectRoot: tmpDir, command: 'x', toolName: 'Bash' },
+    });
+
+    fs.writeFileSync(file, `module.exports.analyze = () => [{ severity: 'info', message: 'v1' }];`);
+    assert.equal((await run())[0].message, 'v1');
+
+    fs.writeFileSync(file, `module.exports.analyze = () => [{ severity: 'info', message: 'v2' }];`);
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(file, later, later);
+    assert.equal((await run())[0].message, 'v2');
+  });
+
+  it('execute reloads an analyzer after a shared helper changes', async () => {
+    const helper = path.join(analyzersDir, '_helper.js');
+    fs.writeFileSync(helper, `module.exports.word = 'old';`);
+    fs.writeFileSync(path.join(analyzersDir, 'uses-helper.js'), `
+      const helper = require('./_helper');
+      module.exports.analyze = () => [{ severity: 'info', message: helper.word }];
+    `);
+    const run = () => analyzerHandler.execute({
+      name: 'uses-helper',
+      config: {},
+      context: { projectRoot: tmpDir, command: 'x', toolName: 'Bash' },
+    });
+
+    assert.equal((await run())[0].message, 'old');
+
+    fs.writeFileSync(helper, `module.exports.word = 'new';`);
+    const later = new Date(Date.now() + 10000);
+    fs.utimesSync(helper, later, later);
+    assert.equal((await run())[0].message, 'new');
+  });
+
   it('execute rejects path traversal in name', async () => {
     const findings = await analyzerHandler.execute({
       name: '../../../etc/passwd',
